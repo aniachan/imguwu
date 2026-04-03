@@ -5,6 +5,11 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.4
+- Fixed a continuous auto-generate loop when **Use LLM to create image prompt** was enabled and QIG's own helper LLM request was being treated like a fresh assistant reply.
+- Added an internal auto-generate suppression guard so prompt/tag helper requests no longer retrigger image generation.
+- Applied the same guard to direct prompt generation, inject palette tag fallback, LLM filter matching, and override fallback/recovery paths for consistent behavior.
+
 ## What's New in v1.6.8
 - Added **Card Only** contextual filter scope so loose per-card filters no longer bleed across other cards for the same character.
 - Kept legacy broader **Character** scope for existing setups, with manager copy actions to recover/move older filters back into the current card.

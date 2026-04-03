@@ -390,12 +390,16 @@ let currentAbortController = null;
 let _autoGenTimeout = null;
 let cancelRequested = false;
 let cancelRequestSerial = 0;
+let _internalLlmRequestCount = 0;
+let _suppressAutoGenerateUntil = 0;
+let _lastAutoGenerateSuppressionLogTs = 0;
 let paletteGenerateLockUntil = 0;
 let paletteCancelLockUntil = 0;
 let _paletteInjectActive = false;
 let _paletteInjectSerial = 0;
 const PALETTE_GENERATE_LOCK_MS = 350;
 const PALETTE_CANCEL_LOCK_MS = 500;
+const INTERNAL_LLM_AUTOGEN_GRACE_MS = 2000;
 const INJECT_CONSUMED_EXTRA_KEY = "qig_inject_consumed";
 const FILTER_SCOPE_GLOBAL = "global";
 const FILTER_SCOPE_CARD = "card";
@@ -487,6 +491,67 @@ async function runAbortableTask(taskFactory, signal) {
             .then(taskFactory)
             .then((value) => finish(resolve, value))
             .catch((error) => finish(reject, error));
+    });
+}
+
+function beginInternalLLMRequest(label = "internal LLM request") {
+    _internalLlmRequestCount += 1;
+    _suppressAutoGenerateUntil = Math.max(_suppressAutoGenerateUntil, Date.now() + INTERNAL_LLM_AUTOGEN_GRACE_MS);
+    log(`Auto-generate guard: begin ${label} (depth ${_internalLlmRequestCount})`);
+}
+
+function endInternalLLMRequest(label = "internal LLM request") {
+    _internalLlmRequestCount = Math.max(0, _internalLlmRequestCount - 1);
+    _suppressAutoGenerateUntil = Math.max(_suppressAutoGenerateUntil, Date.now() + INTERNAL_LLM_AUTOGEN_GRACE_MS);
+    log(`Auto-generate guard: end ${label} (depth ${_internalLlmRequestCount})`);
+}
+
+async function runWithInternalLLMRequest(label, taskFactory) {
+    beginInternalLLMRequest(label);
+    try {
+        return await taskFactory();
+    } finally {
+        endInternalLLMRequest(label);
+    }
+}
+
+function logAutoGenerateSuppression(messageIndex, reason) {
+    const now = Date.now();
+    if (now - _lastAutoGenerateSuppressionLogTs < 750) return;
+    _lastAutoGenerateSuppressionLogTs = now;
+    const idxLabel = Number.isInteger(messageIndex) ? ` for message ${messageIndex}` : "";
+    log(`Auto-generate: Ignoring MESSAGE_RECEIVED${idxLabel} (${reason})`);
+}
+
+function shouldSuppressAutoGenerateFromInternalLLM(messageIndex) {
+    if (_internalLlmRequestCount > 0) {
+        logAutoGenerateSuppression(messageIndex, `QIG internal LLM request active, depth ${_internalLlmRequestCount}`);
+        return true;
+    }
+    const remainingMs = _suppressAutoGenerateUntil - Date.now();
+    if (remainingMs > 0) {
+        logAutoGenerateSuppression(messageIndex, `within ${remainingMs}ms of QIG internal LLM request`);
+        return true;
+    }
+    return false;
+}
+
+async function callInternalQuietPrompt(instruction, { signal = null, quietName, label = "internal quiet prompt" } = {}) {
+    const requestLabel = String(label || quietName || "internal quiet prompt");
+    const quietOptions = {
+        skipWIAN: true,
+        quietName: quietName || `ImageGen_${Date.now()}`,
+        quietToLoud: false,
+    };
+
+    return await runWithInternalLLMRequest(requestLabel, async () => {
+        try {
+            return await runAbortableTask(() => generateQuietPrompt(instruction, quietOptions), signal);
+        } catch (e) {
+            if (e.name === "AbortError") throw e;
+            log(`${requestLabel}: generateQuietPrompt with options failed: ${e.message}, using simple call`);
+            return await runAbortableTask(() => generateQuietPrompt(instruction, false), signal);
+        }
     });
 }
 
@@ -2898,13 +2963,11 @@ ${conceptList}`;
         if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
             response = await callOverrideLLM(instruction, "You are a scene analyst. Reply only with numbers.", signal);
         } else {
-            const quietOptions = { skipWIAN: true, quietName: `FilterMatch_${Date.now()}`, quietToLoud: false };
-            try {
-                response = await runAbortableTask(() => generateQuietPrompt(instruction, quietOptions), signal);
-            } catch (e) {
-                if (e.name === "AbortError") throw e;
-                response = await runAbortableTask(() => generateQuietPrompt(instruction, false), signal);
-            }
+            response = await callInternalQuietPrompt(instruction, {
+                signal,
+                quietName: `FilterMatch_${Date.now()}`,
+                label: "LLM filter matching request",
+            });
         }
         checkAborted();
     } catch (e) {
@@ -2959,13 +3022,11 @@ async function callOverrideLLM(instruction, systemPrompt = "", signal = null) {
     if (!CMRS || !s.llmOverrideProfileId) {
         // Fallback: use main chat AI via generateQuietPrompt
         log("LLM Override: No Connection Manager or profile, falling back to main AI");
-        const quietOptions = { skipWIAN: true, quietName: `ImageGen_${Date.now()}`, quietToLoud: false };
-        try {
-            return await runAbortableTask(() => generateQuietPrompt(instruction, quietOptions), signal);
-        } catch (e) {
-            if (e.name === "AbortError") throw e;
-            return await runAbortableTask(() => generateQuietPrompt(instruction, false), signal);
-        }
+        return await callInternalQuietPrompt(instruction, {
+            signal,
+            quietName: `ImageGen_${Date.now()}`,
+            label: "LLM override fallback request",
+        });
     }
 
     const messages = [];
@@ -3009,24 +3070,22 @@ async function callOverrideLLM(instruction, systemPrompt = "", signal = null) {
     }
 
     try {
-        const response = await runAbortableTask(() => CMRS.sendRequest(
+        const response = await runWithInternalLLMRequest("LLM override profile request", async () => await runAbortableTask(() => CMRS.sendRequest(
             s.llmOverrideProfileId,
             messages,
             s.llmOverrideMaxTokens || 500,
             { extractData: true, includePreset: true, stream: false }
-        ), signal);
+        ), signal));
         return extractLLMResponse(response);
     } catch (e) {
         if (e.name === "AbortError") throw e;
         log(`LLM Override failed (profile: ${s.llmOverrideProfileId}): ${e.message}`);
         log("Falling back to main chat AI. Check your Connection Manager profile's API type, endpoint, and API key.");
-        const quietOptions = { skipWIAN: true, quietName: `ImageGen_${Date.now()}`, quietToLoud: false };
-        try {
-            return await runAbortableTask(() => generateQuietPrompt(instruction, quietOptions), signal);
-        } catch (e2) {
-            if (e2.name === "AbortError") throw e2;
-            return await runAbortableTask(() => generateQuietPrompt(instruction, false), signal);
-        }
+        return await callInternalQuietPrompt(instruction, {
+            signal,
+            quietName: `ImageGen_${Date.now()}`,
+            label: "LLM override recovery request",
+        });
     } finally {
         // Restore original secret
         if (previousSecretId && secretKey && rotateSecret) {
@@ -3292,18 +3351,11 @@ Tags:`;
             log("Using LLM Override for prompt generation");
             llmPrompt = await callOverrideLLM(instructionWithEntropy, "", signal);
         } else {
-            const quietOptions = {
-                skipWIAN: true,
+            llmPrompt = await callInternalQuietPrompt(instructionWithEntropy, {
+                signal,
                 quietName: `ImageGen_${timestamp}`,
-                quietToLoud: false
-            };
-            try {
-                llmPrompt = await runAbortableTask(() => generateQuietPrompt(instructionWithEntropy, quietOptions), signal);
-            } catch (e) {
-                if (e.name === "AbortError") throw e;
-                log(`generateQuietPrompt with options failed: ${e.message}, using simple call`);
-                llmPrompt = await runAbortableTask(() => generateQuietPrompt(instructionWithEntropy, false), signal);
-            }
+                label: "image prompt generation request",
+            });
         }
 
         checkAborted(); // Check immediately after LLM call returns
@@ -10653,17 +10705,11 @@ async function generateImageInjectPalette() {
                 log("Using LLM Override for inject palette");
                 llmResponse = await callOverrideLLM(fullInstruction);
             } else {
-                const quietOptions = {
-                    skipWIAN: true,
+                llmResponse = await callInternalQuietPrompt(fullInstruction, {
+                    signal: currentAbortController?.signal,
                     quietName: `ImageGenInject_${timestamp}`,
-                    quietToLoud: false
-                };
-                try {
-                    llmResponse = await generateQuietPrompt(fullInstruction, quietOptions);
-                } catch (e) {
-                    log(`Palette inject: generateQuietPrompt with options failed: ${e.message}, using simple call`);
-                    llmResponse = await generateQuietPrompt(fullInstruction, false);
-                }
+                    label: "palette inject tag generation request",
+                });
             }
             checkAborted(cancelCheckpoint);
 
@@ -11550,6 +11596,7 @@ jQuery(function () {
             const { eventSource, event_types } = scriptModule;
             if (eventSource) {
                 eventSource.on(event_types.MESSAGE_RECEIVED, (messageIndex) => {
+                    if (shouldSuppressAutoGenerateFromInternalLLM(messageIndex)) return;
                     if (_paletteInjectActive || _injectProcessingCount > 0) return;
                     const s = getSettings();
                     if (!s.autoGenerate) return;

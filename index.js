@@ -6098,11 +6098,17 @@ function showFilterDialog(filter) {
     const currentCard = getCurrentCardScopeInfo();
     const currentCharId = getCurrentCharId();
     const charName = getCurrentCharName();
-    const defaultScope = currentCard.cardKey
-        ? getNormalizedScopedRecord(FILTER_SCOPE_CARD, { cardKey: currentCard.cardKey, cardLabel: currentCard.cardLabel })
-        : (currentCharId != null
-            ? getNormalizedScopedRecord(FILTER_SCOPE_CHAR, { charId: currentCharId })
-            : getNormalizedScopedRecord(FILTER_SCOPE_GLOBAL));
+    const managerScope = getSelectedFilterManagerScopeDescriptor();
+    const isManagerScopeValid = (managerScope.scope === FILTER_SCOPE_CARD && managerScope.cardKey === currentCard.cardKey) ||
+        (managerScope.scope === FILTER_SCOPE_CHAR && String(managerScope.charId) === String(currentCharId)) ||
+        managerScope.scope === FILTER_SCOPE_GLOBAL;
+    const defaultScope = isManagerScopeValid
+        ? managerScope
+        : (currentCard.cardKey
+            ? getNormalizedScopedRecord(FILTER_SCOPE_CARD, { cardKey: currentCard.cardKey, cardLabel: currentCard.cardLabel })
+            : (currentCharId != null
+                ? getNormalizedScopedRecord(FILTER_SCOPE_CHAR, { charId: currentCharId })
+                : getNormalizedScopedRecord(FILTER_SCOPE_GLOBAL)));
     const f = filter || {
         name: "",
         keywords: "",

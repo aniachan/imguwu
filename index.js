@@ -4473,61 +4473,40 @@ async function genProxy(prompt, negative, s, signal) {
     if (signal) signal.addEventListener("abort", () => controller2.abort(), { once: true });
     let res;
     try {
-        let fetchOpts;
+        const payload = {
+            model: s.proxyModel,
+            prompt: prompt,
+            negative_prompt: negative,
+            n: 1,
+            size: `${s.width}x${s.height}`,
+            width: s.width,
+            height: s.height,
+            steps: s.proxySteps || 25,
+            cfg_scale: s.proxyCfg || 6,
+            sampler: s.proxySampler || "Euler a",
+            seed: proxySeed,
+            sse: true,
+            loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const t = l.trim(); const lc = t.lastIndexOf(":"); const hw = lc > 0 && !isNaN(parseFloat(t.slice(lc + 1))); const id = (hw ? t.slice(0, lc) : t).trim(); const pw = hw ? parseFloat(t.slice(lc + 1)) : NaN; return { id, weight: isNaN(pw) ? 0.8 : pw }; }).filter(l => l.id) : undefined,
+            facefix: s.proxyFacefix || undefined
+        };
         if (hasRefImages) {
-            // Use multipart form data to send reference images (OpenAI gpt-image-1 style)
-            log(`Sending ${s.proxyRefImages.length} reference image(s) via multipart form data`);
-            const formData = new FormData();
-            formData.append("model", s.proxyModel);
-            formData.append("prompt", prompt);
-            if (negative) formData.append("negative_prompt", negative);
-            formData.append("n", "1");
-            formData.append("size", `${s.width}x${s.height}`);
-            formData.append("width", String(s.width));
-            formData.append("height", String(s.height));
-            if (s.proxySteps) formData.append("steps", String(s.proxySteps || 25));
-            if (s.proxyCfg) formData.append("cfg_scale", String(s.proxyCfg || 6));
-            if (s.proxySampler) formData.append("sampler", s.proxySampler || "Euler a");
-            if (proxySeed !== -1) formData.append("seed", String(proxySeed));
-
-            for (const img of s.proxyRefImages) {
+            log(`Attaching ${s.proxyRefImages.length} reference image(s) to images/generations request`);
+            payload.image = s.proxyRefImages.map(img => {
                 const match = img.match(/^data:([^;]+);base64,(.+)$/);
                 if (match) {
-                    const byteStr = atob(match[2]);
-                    const bytes = new Uint8Array(byteStr.length);
-                    for (let i = 0; i < byteStr.length; i++) bytes[i] = byteStr.charCodeAt(i);
-                    const blob = new Blob([bytes], { type: match[1] });
-                    formData.append("image[]", blob, `ref_${Date.now()}.png`);
-                    log(`  attached ref image: ${match[1]}, ${Math.round(bytes.length / 1024)}KB`);
+                    log(`  ref image: ${match[1]}, ${Math.round(match[2].length * 0.75 / 1024)}KB`);
+                    return img;
                 }
-            }
-
-            const multipartHeaders = {};
-            if (s.proxyKey) multipartHeaders["Authorization"] = `Bearer ${s.proxyKey}`;
-            fetchOpts = { method: "POST", headers: multipartHeaders, body: formData, signal: controller2.signal };
-        } else {
-            fetchOpts = {
-                method: "POST",
-                headers,
-                body: JSON.stringify({
-                    model: s.proxyModel,
-                    prompt: prompt,
-                    negative_prompt: negative,
-                    n: 1,
-                    size: `${s.width}x${s.height}`,
-                    width: s.width,
-                    height: s.height,
-                    steps: s.proxySteps || 25,
-                    cfg_scale: s.proxyCfg || 6,
-                    sampler: s.proxySampler || "Euler a",
-                    seed: proxySeed,
-                    loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const t = l.trim(); const lc = t.lastIndexOf(":"); const hw = lc > 0 && !isNaN(parseFloat(t.slice(lc + 1))); const id = (hw ? t.slice(0, lc) : t).trim(); const pw = hw ? parseFloat(t.slice(lc + 1)) : NaN; return { id, weight: isNaN(pw) ? 0.8 : pw }; }).filter(l => l.id) : undefined,
-                    facefix: s.proxyFacefix || undefined
-                }),
-                signal: controller2.signal
-            };
+                return img;
+            });
         }
-        res = await fetch(s.proxyUrl, fetchOpts);
+        log(`Images endpoint payload keys: ${Object.keys(payload).join(', ')}`);
+        res = await fetch(s.proxyUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(payload),
+            signal: controller2.signal
+        });
     } catch (e) {
         if (e.name === "AbortError" && timedOut2 && !signal?.aborted) {
             throw new Error("Proxy request timed out after 120 seconds");
@@ -4537,6 +4516,41 @@ async function genProxy(prompt, negative, s, signal) {
         clearTimeout(timeoutId2);
     }
     if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
+
+    // Handle SSE streaming response
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType.includes("text/event-stream") || contentType.includes("text/plain")) {
+        log(`Parsing SSE stream response`);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let imageUrl = null;
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop();
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed === "data: [DONE]" || trimmed === "data: : keepalive") continue;
+                if (trimmed.startsWith("data: ")) {
+                    try {
+                        const data = JSON.parse(trimmed.slice(6));
+                        log(`SSE event: ${JSON.stringify(data).substring(0, 200)}`);
+                        if (data.data?.[0]?.url) { imageUrl = data.data[0].url; break; }
+                        if (data.data?.[0]?.b64_json) { imageUrl = `data:image/png;base64,${data.data[0].b64_json}`; break; }
+                        if (data.url) { imageUrl = data.url; break; }
+                        if (data.b64_json) { imageUrl = `data:image/png;base64,${data.b64_json}`; break; }
+                    } catch (e) { /* skip non-JSON lines */ }
+                }
+            }
+            if (imageUrl) break;
+        }
+        if (imageUrl) return imageUrl;
+        throw new Error("No image in SSE response");
+    }
+
     const data = await res.json();
     if (data.data?.[0]?.url) return data.data[0].url;
     if (data.data?.[0]?.b64_json) return `data:image/png;base64,${data.data[0].b64_json}`;

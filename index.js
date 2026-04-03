@@ -4309,13 +4309,12 @@ async function genProxy(prompt, negative, s, signal) {
     if (s.proxyKey) headers["Authorization"] = `Bearer ${s.proxyKey}`;
 
     const hasRefImages = s.proxyRefImages?.length > 0;
-    const isChatProxy = hasRefImages || (s.proxyUrl.includes("/v1") && !s.proxyUrl.includes("/images"));
+    const isChatProxy = s.proxyUrl.includes("/v1") && !s.proxyUrl.includes("/images");
     const proxySeed = resolveRandomSeed(s.proxySeed, s);
     log(`Proxy mode: isChatProxy=${isChatProxy}, refImages=${s.proxyRefImages?.length || 0}, url=${s.proxyUrl.substring(0, 60)}`);
 
     if (isChatProxy) {
-        // Derive chat completions URL from any /v1 URL
-        const proxyUrlBase = s.proxyUrl.replace(/\/$/, "").replace(/\/images\/generations$/i, "").replace(/\/images$/i, "");
+        const proxyUrlBase = s.proxyUrl.replace(/\/$/, "");
         const chatUrl = /\/chat\/completions$/i.test(proxyUrlBase)
             ? proxyUrlBase
             : proxyUrlBase + "/chat/completions";
@@ -4474,27 +4473,61 @@ async function genProxy(prompt, negative, s, signal) {
     if (signal) signal.addEventListener("abort", () => controller2.abort(), { once: true });
     let res;
     try {
-        res = await fetch(s.proxyUrl, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
-                model: s.proxyModel,
-                prompt: prompt,
-                negative_prompt: negative,
-                n: 1,
-                size: `${s.width}x${s.height}`,
-                width: s.width,
-                height: s.height,
-                steps: s.proxySteps || 25,
-                cfg_scale: s.proxyCfg || 6,
-                sampler: s.proxySampler || "Euler a",
-                seed: proxySeed,
-                loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const t = l.trim(); const lc = t.lastIndexOf(":"); const hw = lc > 0 && !isNaN(parseFloat(t.slice(lc + 1))); const id = (hw ? t.slice(0, lc) : t).trim(); const pw = hw ? parseFloat(t.slice(lc + 1)) : NaN; return { id, weight: isNaN(pw) ? 0.8 : pw }; }).filter(l => l.id) : undefined,
-                facefix: s.proxyFacefix || undefined,
-                reference_images: s.proxyRefImages?.length ? s.proxyRefImages : undefined
-            }),
-            signal: controller2.signal
-        });
+        let fetchOpts;
+        if (hasRefImages) {
+            // Use multipart form data to send reference images (OpenAI gpt-image-1 style)
+            log(`Sending ${s.proxyRefImages.length} reference image(s) via multipart form data`);
+            const formData = new FormData();
+            formData.append("model", s.proxyModel);
+            formData.append("prompt", prompt);
+            if (negative) formData.append("negative_prompt", negative);
+            formData.append("n", "1");
+            formData.append("size", `${s.width}x${s.height}`);
+            formData.append("width", String(s.width));
+            formData.append("height", String(s.height));
+            if (s.proxySteps) formData.append("steps", String(s.proxySteps || 25));
+            if (s.proxyCfg) formData.append("cfg_scale", String(s.proxyCfg || 6));
+            if (s.proxySampler) formData.append("sampler", s.proxySampler || "Euler a");
+            if (proxySeed !== -1) formData.append("seed", String(proxySeed));
+
+            for (const img of s.proxyRefImages) {
+                const match = img.match(/^data:([^;]+);base64,(.+)$/);
+                if (match) {
+                    const byteStr = atob(match[2]);
+                    const bytes = new Uint8Array(byteStr.length);
+                    for (let i = 0; i < byteStr.length; i++) bytes[i] = byteStr.charCodeAt(i);
+                    const blob = new Blob([bytes], { type: match[1] });
+                    formData.append("image[]", blob, `ref_${Date.now()}.png`);
+                    log(`  attached ref image: ${match[1]}, ${Math.round(bytes.length / 1024)}KB`);
+                }
+            }
+
+            const multipartHeaders = {};
+            if (s.proxyKey) multipartHeaders["Authorization"] = `Bearer ${s.proxyKey}`;
+            fetchOpts = { method: "POST", headers: multipartHeaders, body: formData, signal: controller2.signal };
+        } else {
+            fetchOpts = {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                    model: s.proxyModel,
+                    prompt: prompt,
+                    negative_prompt: negative,
+                    n: 1,
+                    size: `${s.width}x${s.height}`,
+                    width: s.width,
+                    height: s.height,
+                    steps: s.proxySteps || 25,
+                    cfg_scale: s.proxyCfg || 6,
+                    sampler: s.proxySampler || "Euler a",
+                    seed: proxySeed,
+                    loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const t = l.trim(); const lc = t.lastIndexOf(":"); const hw = lc > 0 && !isNaN(parseFloat(t.slice(lc + 1))); const id = (hw ? t.slice(0, lc) : t).trim(); const pw = hw ? parseFloat(t.slice(lc + 1)) : NaN; return { id, weight: isNaN(pw) ? 0.8 : pw }; }).filter(l => l.id) : undefined,
+                    facefix: s.proxyFacefix || undefined
+                }),
+                signal: controller2.signal
+            };
+        }
+        res = await fetch(s.proxyUrl, fetchOpts);
     } catch (e) {
         if (e.name === "AbortError" && timedOut2 && !signal?.aborted) {
             throw new Error("Proxy request timed out after 120 seconds");

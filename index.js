@@ -2658,6 +2658,59 @@ function getPromptAwareProfileContext(profile, sceneText = "") {
     };
 }
 
+function resolveLLMPromptProfileContext(ctx = getContext(), sceneText = "") {
+    const baseProfile = resolveChatProfileContext(ctx);
+    const promptAwareProfile = getPromptAwareProfileContext(baseProfile, sceneText);
+
+    if (promptAwareProfile.isGroup || promptAwareProfile.charNames.length > 1) {
+        return {
+            ...promptAwareProfile,
+            usesCurrentCardContext: false,
+            useExactNameRequirements: promptAwareProfile.charNames.length > 1,
+        };
+    }
+
+    const currentEntry = getCurrentCharacterEntry(ctx);
+    const currentData = currentEntry?.data || {};
+    const userName = String(promptAwareProfile.userName || "").trim() || "user";
+    const currentCardName = normalizeScopeLabel(currentEntry?.name || currentEntry?.avatar || ctx?.name2 || "");
+    const directCardDesc = truncateForContext(currentData.description, 1500);
+    const directCardScenario = truncateForContext(currentData.scenario, 600);
+    const directCardTags = getCharacterCardTags(currentData).join(", ");
+    const discoveredNames = uniqueStringList([
+        ...extractLikelyCharacterNames(directCardDesc),
+        ...extractLikelyCharacterNames(directCardScenario),
+        ...extractLikelyCharacterNames(directCardTags),
+        ...extractLikelyCharacterNames(sceneText || ""),
+    ]).filter(name => normalizeContextLookupValue(name) !== normalizeContextLookupValue(userName));
+    const preferredCharName = !isLikelyGenericCharacterLabel(currentCardName) && currentCardName
+        ? currentCardName
+        : (discoveredNames[0] || promptAwareProfile.primaryCharName || currentCardName || "character");
+    const charNames = preferredCharName ? [preferredCharName] : [];
+    const charNameJoined = preferredCharName || "character";
+    const promptOverrides = { charName: charNameJoined, userName };
+
+    return {
+        ...promptAwareProfile,
+        userName,
+        charIds: currentEntry?.id != null ? [String(currentEntry.id)] : promptAwareProfile.charIds,
+        charNames,
+        charNameJoined,
+        primaryCharId: currentEntry?.id != null ? String(currentEntry.id) : promptAwareProfile.primaryCharId,
+        primaryCharName: preferredCharName || promptAwareProfile.primaryCharName || "character",
+        charDescCombined: directCardDesc,
+        charScenarioCombined: directCardScenario,
+        charTagsCombined: directCardTags,
+        charCards: currentEntry?.data ? [currentEntry.data] : promptAwareProfile.charCards,
+        charDescResolved: resolvePrompt(directCardDesc || "", promptOverrides),
+        charScenarioResolved: resolvePrompt(directCardScenario || "", promptOverrides),
+        charTagsResolved: resolvePrompt(directCardTags || "", promptOverrides),
+        userDescResolved: resolvePrompt(promptAwareProfile.userDesc || "", promptOverrides),
+        usesCurrentCardContext: true,
+        useExactNameRequirements: false,
+    };
+}
+
 function expandWildcards(text) {
     return text.replace(/\{([^{}]+)\}/g, (match, inner) => {
         const options = inner.split('|').map(s => s.trim()).filter(Boolean);
@@ -3340,7 +3393,7 @@ async function populatePresetList(selectId, selectedPreset) {
 }
 
 function getResolvedLLMPrefill(settings = getSettings()) {
-    const profile = getPromptAwareProfileContext(resolveChatProfileContext());
+    const profile = resolveLLMPromptProfileContext(getContext());
     return resolvePrompt(settings?.llmPrefill ?? "", {
         charName: profile.charNameJoined,
         userName: profile.userName,
@@ -3391,7 +3444,7 @@ async function generateLLMPrompt(s, basePrompt, signal) {
 
     try {
         const ctx = getContext();
-        const profile = getPromptAwareProfileContext(resolveChatProfileContext(ctx), basePrompt);
+        const profile = resolveLLMPromptProfileContext(ctx, basePrompt);
         const charName = profile.charNameJoined || "character";
         const userName = profile.userName || "user";
         const charDesc = profile.charDescResolved || "";
@@ -3415,32 +3468,41 @@ async function generateLLMPrompt(s, basePrompt, signal) {
         if (charSkin) skinTones.push(`${charName}: ${charSkin[0]}`);
         if (userSkin) skinTones.push(`${userName}: ${userSkin[0]}`);
 
-        const appearanceSections = [];
-        if (sceneIncludesUserPersona && userPersona) {
-            appearanceSections.push(`User persona (${userName}; applies to first-person references like I/me/my): ${userPersona.substring(0, 800)}`);
+        let appearanceContext = "";
+        if (profile.usesCurrentCardContext) {
+            if (charDesc) appearanceContext += `${charName}'s appearance: ${charDesc.substring(0, 1500)}\n`;
+            if (userPersona) appearanceContext += `${userName}'s appearance: ${userPersona.substring(0, 800)}\n`;
+            if (tags) appearanceContext += `Source/Tags: ${tags}\n`;
+            if (scenario) appearanceContext += `Setting: ${scenario.substring(0, 400)}\n`;
+        } else {
+            const appearanceSections = [];
+            if (sceneIncludesUserPersona && userPersona) {
+                appearanceSections.push(`User persona (${userName}; applies to first-person references like I/me/my): ${userPersona.substring(0, 800)}`);
+            }
+            if (charDesc) {
+                const charProfileLabel = shouldDeprioritizeUnmentionedCharacters
+                    ? "Secondary active character profiles (only use if the scene clearly includes them):"
+                    : "Character profiles:";
+                appearanceSections.push(`${charProfileLabel}\n${charDesc.substring(0, 1500)}`);
+            }
+            if (!sceneIncludesUserPersona && userPersona) {
+                appearanceSections.push(`User persona (${userName}; applies to first-person references like I/me/my): ${userPersona.substring(0, 800)}`);
+            }
+            if (tags) appearanceSections.push(`Source/Tags: ${tags}`);
+            if (scenario) appearanceSections.push(`Setting: ${scenario.substring(0, 400)}`);
+            appearanceContext = appearanceSections.join("\n");
+            if (appearanceContext) appearanceContext += "\n";
         }
-        if (charDesc) {
-            const charProfileLabel = shouldDeprioritizeUnmentionedCharacters
-                ? "Secondary active character profiles (only use if the scene clearly includes them):"
-                : "Character profiles:";
-            appearanceSections.push(`${charProfileLabel}\n${charDesc.substring(0, 1500)}`);
-        }
-        if (!sceneIncludesUserPersona && userPersona) {
-            appearanceSections.push(`User persona (${userName}; applies to first-person references like I/me/my): ${userPersona.substring(0, 800)}`);
-        }
-        if (tags) appearanceSections.push(`Source/Tags: ${tags}`);
-        if (scenario) appearanceSections.push(`Setting: ${scenario.substring(0, 400)}`);
-        let appearanceContext = appearanceSections.join("\n");
-        if (appearanceContext) appearanceContext += "\n";
 
         const skinEnforce = skinTones.length ? `\nCRITICAL - You MUST include these skin tones: ${skinTones.join(", ")}` : "";
-        const exactNameRequirement = activeCharacterNames.length
+        const shouldUseExactNameRequirements = !!profile.useExactNameRequirements && activeCharacterNames.length > 0;
+        const exactNameRequirement = shouldUseExactNameRequirements
             ? `\n- Preserve and include these exact character name${activeCharacterNames.length === 1 ? "" : "s"} when the scene/card identifies them${shouldDeprioritizeUnmentionedCharacters ? "; otherwise do not force them into the prompt just because they are the active chat character" : ""}: ${activeCharacterList}`
             : "";
         const exactUserRequirement = userPersona
             ? `\n- If the scene refers to the user in first person or by name, preserve and include the exact user persona name when applicable: ${userName}`
             : "";
-        const exactNameBlock = activeCharacterNames.length
+        const exactNameBlock = shouldUseExactNameRequirements
             ? `\n${shouldDeprioritizeUnmentionedCharacters ? "ACTIVE CHARACTER NAMES (only use if the scene explicitly includes them):" : "CHARACTER NAMES TO PRESERVE (use these exact spellings when applicable):"} ${activeCharacterList}`
             : "";
         const userNameBlock = userPersona
@@ -3543,7 +3605,7 @@ ${isMultiMessage ? "SCENE CONTEXT (multiple messages):\n" : "CURRENT SCENE: "}${
 
 Write a detailed image prompt describing:
 - The characters involved with their defining visual traits (hair color, eye color, outfit, distinguishing features)
-- Use the exact active character names when the scene/card identifies them${activeCharacterNames.length ? ` (${activeCharacterList})` : ""}
+${shouldUseExactNameRequirements ? `- Use the exact active character names when the scene/card identifies them${activeCharacterNames.length ? ` (${activeCharacterList})` : ""}` : ""}
 ${userSceneRequirementBullet}
 - Preserve explicit ages, species, creature types, and nonhuman identities from the scene/profile instead of replacing them with generic human labels
 - If from known media/franchise, include the series name and character's canonical appearance
@@ -3602,7 +3664,7 @@ Create Danbooru/Booru-style tags for this ${isMultiMessage ? "scene context:\n" 
 Character info: ${appearanceContext}${exactNameBlock}${userNameBlock}${identityRequirementBlock}${subjectPriorityBlock}
 
 Required tag categories:
-- Character name + series name (CRITICAL: Use recognizable fictional media character tags whenever recognized, and keep exact active names like ${activeCharacterList || "the named character"} when no canonical tag exists)
+- Character name + series name (CRITICAL: Use recognizable fictional media character tags whenever recognized${shouldUseExactNameRequirements ? `, and keep exact active names like ${activeCharacterList || "the named character"} when no canonical tag exists` : ""})
 ${userSceneRequirementBullet}
 - Preserve explicit ages, species, creature types, and nonhuman identities from the scene/profile instead of replacing them with generic human tags
 - Physical traits (hair, eyes, body, skin)

@@ -5,6 +5,11 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.11
+- Adjusted helper-LLM prompt building into a hybrid path: normal single-character chats now lean on the current card's own description, scenario, and tags again instead of only the broader resolved profile context.
+- Reduced the recent tendency for prompts to over-preserve generic active-card/world-card labels or force exact active-character names in one-on-one chats, helping actual character names and card-defined appearance details come through more naturally again.
+- Kept the newer `{{user}}` / first-person identity-preservation and subject-priority safeguards, so persona age, species, and nonhuman traits are still less likely to be flattened into generic human labels.
+
 ## What's New in v1.8.10
 - Improved helper-LLM subject prioritization so scenes involving `{{user}}` / first-person references no longer default so aggressively to the active `{{char}}` profile.
 - User personas now get stronger identity-preservation guidance for age, species, and nonhuman traits, helping prevent prompts from collapsing them into generic labels like `man`, `woman`, or partial-body placeholders such as a `green claw`.

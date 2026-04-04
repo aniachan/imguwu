@@ -5607,7 +5607,11 @@ async function insertImageIntoMessage(entryOrUrl, targetMessageIndex = null) {
 
     const s = getSettings();
     const indices = parseMessageRange(s.messageRange, chat.length);
-    const fallbackIdx = indices.length > 0 ? indices[indices.length - 1] : chat.length - 1;
+    const fallbackCandidates = indices.length > 0 ? indices : chat.map((_, index) => index);
+    const fallbackAssistantIdx = [...fallbackCandidates].reverse().find(index => !chat[index]?.is_user);
+    const fallbackIdx = Number.isInteger(fallbackAssistantIdx)
+        ? fallbackAssistantIdx
+        : (indices.length > 0 ? indices[indices.length - 1] : chat.length - 1);
     const idx = Number.isInteger(targetMessageIndex)
         ? Math.max(0, Math.min(targetMessageIndex, chat.length - 1))
         : fallbackIdx;

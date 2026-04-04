@@ -5,6 +5,9 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.17
+- Manual image inserts now prefer the latest non-user / assistant message instead of attaching to the latest raw message by default.
+
 ## What's New in v1.8.16
 - Gallery now supports importing custom image URLs, with options to add the image to QIG Gallery or insert it directly into chat.
 

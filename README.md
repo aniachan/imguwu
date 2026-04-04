@@ -5,6 +5,9 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.15
+- Proxy generation can now also auto-use attached chat images from the selected message context, including SillyTavern-hosted/local images that need to be fetched inline before being sent to the backend.
+
 ## What's New in v1.8.14
 - Proxy/OpenAI-compatible generation now auto-detects pasted direct image URLs in prompt/chat text, converts them into structured `image_url` inputs, and removes the raw URL text from the outgoing prompt.
 

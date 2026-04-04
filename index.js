@@ -297,6 +297,7 @@ const defaultSettings = {
 let lastPrompt = "";
 let lastNegative = "";
 let lastPromptWasLLM = false;
+let lastProxyContextRefImages = [];
 let originalPrompt = "";
 let originalNegative = "";
 function safeParse(key, fallback) {
@@ -903,6 +904,86 @@ function normalizeProxyPromptInputs(prompt, refImages = []) {
         promptImageUrls: extracted.imageUrls,
         refImages: mergedRefImages,
     };
+}
+
+function normalizeProxyRuntimeRefImages(refImages) {
+    const normalized = [];
+    for (const raw of refImages || []) {
+        if (typeof raw !== "string") continue;
+        const value = raw.trim();
+        if (!value) continue;
+        normalized.push(value);
+    }
+    return normalized;
+}
+
+function mergeProxyRefImages(...groups) {
+    const merged = [];
+    const seen = new Set();
+    for (const group of groups) {
+        for (const raw of group || []) {
+            if (typeof raw !== "string") continue;
+            const value = raw.trim();
+            if (!value || seen.has(value)) continue;
+            seen.add(value);
+            merged.push(value);
+        }
+    }
+    return merged;
+}
+
+function isPrivateIpv4Hostname(hostname) {
+    const parts = String(hostname || "").split(".");
+    if (parts.length !== 4 || parts.some(part => !/^\d+$/.test(part))) return false;
+    const nums = parts.map(part => parseInt(part, 10));
+    if (nums.some(num => !Number.isInteger(num) || num < 0 || num > 255)) return false;
+    if (nums[0] === 10 || nums[0] === 127) return true;
+    if (nums[0] === 192 && nums[1] === 168) return true;
+    return nums[0] === 172 && nums[1] >= 16 && nums[1] <= 31;
+}
+
+function shouldInlineAutoProxyRefUrl(url) {
+    const source = String(url || "").trim();
+    if (!source || isDataImageUrl(source)) return false;
+    if (source.startsWith("blob:")) return true;
+
+    try {
+        const parsed = new URL(source, window.location?.href || "http://localhost/");
+        if (!/^https?:$/i.test(parsed.protocol)) return false;
+
+        const hostname = String(parsed.hostname || "").toLowerCase();
+        const currentOrigin = window.location?.origin || "";
+        const currentHostname = String(window.location?.hostname || "").toLowerCase();
+
+        if (currentOrigin && parsed.origin === currentOrigin) return true;
+        if (currentHostname && hostname === currentHostname) return true;
+        if (["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"].includes(hostname)) return true;
+        return isPrivateIpv4Hostname(hostname);
+    } catch {
+        return false;
+    }
+}
+
+async function normalizeAutoProxyRefUrl(url, { messageIndex = null, sourceLabel = "" } = {}) {
+    const source = String(url || "").trim();
+    if (!source) return "";
+    if (isDataImageUrl(source)) return source;
+
+    const absoluteUrl = toAbsoluteImageUrl(source);
+    if (!absoluteUrl) return "";
+    if (!shouldInlineAutoProxyRefUrl(absoluteUrl)) {
+        return isHttpUrl(absoluteUrl) ? absoluteUrl : "";
+    }
+
+    try {
+        const { buffer, contentType } = await fetchImageBuffer(absoluteUrl);
+        const formatInfo = detectImageFormat(buffer, contentType, absoluteUrl);
+        log(`Auto chat ref: Inlined ${sourceLabel || "message image"}${messageIndex != null ? ` from message #${messageIndex}` : ""}`);
+        return `data:${formatInfo.mime};base64,${arrayBufferToBase64(buffer)}`;
+    } catch (e) {
+        log(`Auto chat ref: Failed to inline ${sourceLabel || "message image"}${messageIndex != null ? ` from message #${messageIndex}` : ""}: ${e.message}`);
+        return "";
+    }
 }
 
 function normalizeProxyEndpointSetting(value) {
@@ -2948,6 +3029,74 @@ function getMessages() {
         console.warn("[QIG] Multi-message context exceeds 10000 chars:", result.length);
     }
     return result;
+}
+
+function getSelectedSceneMessages(settings = getSettings(), ctx = getContext()) {
+    const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
+    if (!chat.length) return [];
+    const indices = parseMessageRange(settings?.messageRange, chat.length);
+    return indices
+        .map(index => ({ index, message: chat[index] }))
+        .filter(entry => entry.message && typeof entry.message === "object");
+}
+
+function extractMessageAttachedImageRefs(message) {
+    const refs = [];
+    const seen = new Set();
+    const addRef = (value, label) => {
+        const url = String(value || "").trim();
+        if (!url || seen.has(url)) return;
+        seen.add(url);
+        refs.push({ url, label });
+    };
+
+    const mediaItems = Array.isArray(message?.extra?.media) ? message.extra.media : [];
+    mediaItems.forEach((item, index) => {
+        const mediaType = String(item?.type || item?.media_type || "").trim().toLowerCase();
+        if (mediaType && !mediaType.startsWith("image")) return;
+        addRef(item?.url ?? item?.image ?? item?.src ?? item?.path ?? item?.sourceUrl, `extra.media[${index}]`);
+    });
+
+    addRef(message?.extra?.image, "extra.image");
+    return refs;
+}
+
+async function collectChatContextProxyRefImages(settings = getSettings(), ctx = getContext()) {
+    if (settings?.provider !== "proxy" || !settings?.useLastMessage) return [];
+
+    const selectedMessages = getSelectedSceneMessages(settings, ctx);
+    if (!selectedMessages.length) return [];
+
+    const refImages = [];
+    const seen = new Set();
+    let sourceMessageCount = 0;
+    let discoveredImageCount = 0;
+
+    for (const entry of selectedMessages) {
+        const imageRefs = extractMessageAttachedImageRefs(entry.message);
+        if (!imageRefs.length) continue;
+        sourceMessageCount++;
+        discoveredImageCount += imageRefs.length;
+
+        for (const imageRef of imageRefs) {
+            const normalized = await normalizeAutoProxyRefUrl(imageRef.url, {
+                messageIndex: entry.index,
+                sourceLabel: imageRef.label,
+            });
+            const value = String(normalized || "").trim();
+            if (!value || seen.has(value)) continue;
+            seen.add(value);
+            refImages.push(value);
+        }
+    }
+
+    if (refImages.length > 0) {
+        log(`Auto chat refs: Using ${refImages.length} image(s) from ${sourceMessageCount} selected message(s)`);
+    } else if (discoveredImageCount > 0) {
+        log("Auto chat refs: Found attached message images, but none could be normalized for proxy use");
+    }
+
+    return refImages;
 }
 
 const styleCache = new Map();
@@ -5104,7 +5253,7 @@ async function genLocal(prompt, negative, s, signal) {
     }
 }
 
-async function genProxy(prompt, negative, s, signal) {
+async function genProxy(prompt, negative, s, signal, options = {}) {
     // ComfyUI Proxy mode — simple GET /prompt/{text}?token=xxx → PNG
     if (s.proxyComfyMode) {
         const baseUrl = s.proxyUrl.replace(/\/$/, "");
@@ -5160,11 +5309,13 @@ async function genProxy(prompt, negative, s, signal) {
     const refMode = normalizeProxyRefImageSetting(s.proxyRefImageMode);
     const requestUrl = resolveProxyRequestUrl(s.proxyUrl, endpointMode);
     const proxySeed = resolveRandomSeed(s.proxySeed, s);
-    const refImages = normalizeProxyRefImages(s.proxyRefImages || [], refMode);
+    const manualRefImages = normalizeProxyRefImages(s.proxyRefImages || [], refMode);
+    const runtimeRefImages = normalizeProxyRuntimeRefImages(options?.proxyRefImages || []);
+    const refImages = mergeProxyRefImages(manualRefImages, runtimeRefImages);
     const sseEnabled = endpointMode === "images_generations" ? shouldUseProxySse(s, payloadMode) : false;
 
     if (!requestUrl) throw new Error("Proxy URL is required");
-    log(`Proxy mode: endpoint=${endpointMode}, payload=${payloadMode}, refMode=${refMode}, sse=${sseEnabled}, refImages=${refImages.length}, url=${requestUrl.substring(0, 80)}`);
+    log(`Proxy mode: endpoint=${endpointMode}, payload=${payloadMode}, refMode=${refMode}, sse=${sseEnabled}, refImages=${refImages.length}, runtimeRefs=${runtimeRefImages.length}, url=${requestUrl.substring(0, 80)}`);
 
     const controller = new AbortController();
     let timedOut = false;
@@ -6425,10 +6576,10 @@ const providerGenerators = {
     proxy: genProxy
 };
 
-async function generateForProvider(prompt, negative, settings, signal) {
+async function generateForProvider(prompt, negative, settings, signal, options = {}) {
     const generator = providerGenerators[settings.provider];
     if (!generator) throw new Error(`Unknown provider: ${settings.provider}`);
-    return await generator(prompt, negative, settings, signal);
+    return await generator(prompt, negative, settings, signal, options);
 }
 
 async function regenerateImage() {
@@ -6443,13 +6594,16 @@ async function regenerateImage() {
     const originalSeed = getGenerationSeedValue(s);
     const cancelCheckpoint = getCancelCheckpoint();
     setGenerationSeedValue(s, -1);
+    const providerRuntimeOptions = s.provider === "proxy"
+        ? { proxyRefImages: [...lastProxyContextRefImages] }
+        : {};
 
     log(`Regenerating with prompt: ${lastPrompt.substring(0, 50)}... (batch: ${batchCount})`);
     try {
         checkAborted(cancelCheckpoint);
         if (batchCount <= 1) {
             showStatus("🔄 Regenerating...");
-            const result = await generateForProvider(lastPrompt, lastNegative, s, currentAbortController?.signal);
+            const result = await generateForProvider(lastPrompt, lastNegative, s, currentAbortController?.signal, providerRuntimeOptions);
             checkAborted(cancelCheckpoint);
             hideStatus();
             if (result) {
@@ -6465,7 +6619,7 @@ async function regenerateImage() {
                 showStatus(`🔄 Regenerating ${i + 1}/${batchCount}...`);
                 const expandedPrompt = expandWildcards(lastPrompt);
                 const expandedNegative = expandWildcards(lastNegative);
-                const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
+                const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal, providerRuntimeOptions);
                 if (result) {
                     const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, { promptWasLLM: lastPromptWasLLM });
                     if (entry) results.push(entry);
@@ -11506,6 +11660,7 @@ async function generateImageInjectPalette() {
             lastPrompt = prompt;
             lastNegative = negative;
             lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
+            lastProxyContextRefImages = [];
 
             const batchCount = s.batchCount || 1;
             const results = [];
@@ -11513,15 +11668,15 @@ async function generateImageInjectPalette() {
             const useSequentialSeeds = s.sequentialSeeds && batchCount > 1;
             const baseSeed = getBatchBaseSeed(s, batchCount, contextualApplied.seedOverride);
             for (let i = 0; i < batchCount; i++) {
-                checkAborted(cancelCheckpoint);
-                setGenerationSeedValue(s, useSequentialSeeds ? baseSeed + i : baseSeed);
-                showStatus(`🖼️ Generating palette-inject image ${i + 1}/${batchCount}...`);
-                const expandedPrompt = expandWildcards(prompt);
-                const expandedNegative = expandWildcards(negative);
-                const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
-                if (result) {
-                    const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, { promptWasLLM: lastPromptWasLLM });
-                    if (entry) results.push(entry);
+                    checkAborted(cancelCheckpoint);
+                    setGenerationSeedValue(s, useSequentialSeeds ? baseSeed + i : baseSeed);
+                    showStatus(`🖼️ Generating palette-inject image ${i + 1}/${batchCount}...`);
+                    const expandedPrompt = expandWildcards(prompt);
+                    const expandedNegative = expandWildcards(negative);
+                    const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
+                    if (result) {
+                        const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, { promptWasLLM: lastPromptWasLLM });
+                        if (entry) results.push(entry);
                 }
             }
             setGenerationSeedValue(s, originalSeed);
@@ -11598,6 +11753,7 @@ async function generateImage() {
 
     let basePrompt = resolvePrompt(s.prompt);
     let scenePrompt = "";
+    let chatContextProxyRefImages = [];
 
     if (s.useLastMessage) {
         const messages = getMessages();
@@ -11614,6 +11770,15 @@ async function generateImage() {
             }
         }
     }
+
+    if (s.provider === "proxy" && s.useLastMessage) {
+        chatContextProxyRefImages = await collectChatContextProxyRefImages(s);
+        checkAborted(cancelCheckpoint);
+    }
+    lastProxyContextRefImages = [...chatContextProxyRefImages];
+    const providerRuntimeOptions = s.provider === "proxy"
+        ? { proxyRefImages: chatContextProxyRefImages }
+        : {};
 
     log(`Base prompt: ${basePrompt.substring(0, 100)}...`);
     const batchCount = s.batchCount || 1;
@@ -11682,7 +11847,7 @@ async function generateImage() {
                 showStatus(`🖼️ Generating image ${i + 1}/${batchCount}...`);
                 const expandedPrompt = expandWildcards(prompt);
                 const expandedNegative = expandWildcards(negative);
-                const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
+                const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal, providerRuntimeOptions);
                 if (result) {
                     const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, { promptWasLLM: lastPromptWasLLM });
                     if (entry) results.push(entry);
@@ -12169,6 +12334,7 @@ async function processInjectMessage(messageText, messageIndex) {
                 lastPrompt = prompt;
                 lastNegative = negative;
                 lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
+                lastProxyContextRefImages = [];
 
                 const batchCount = s.batchCount || 1;
                 const results = [];

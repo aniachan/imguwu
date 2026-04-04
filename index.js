@@ -2224,6 +2224,62 @@ function truncateForContext(text, maxLen = 1200) {
     return `${str.slice(0, maxLen - 3)}...`;
 }
 
+const GENERIC_CHARACTER_LABEL_PATTERN = /\b(roleplay|scenario|slice\s+of\s+life|sandbox|simulation|simulator|story|chat|setting|world|universe|template|preset|adventure)\b/i;
+const CHARACTER_NAME_STOPWORDS = new Set([
+    "a", "an", "and", "answer", "based", "character", "characters", "close", "current", "description",
+    "explicit", "filter", "filters", "image", "include", "life", "maybe", "no", "none", "output", "prompt",
+    "reply", "respond", "roleplay", "scene", "scenes", "setting", "slice", "source", "story", "suburban",
+    "tag", "tags", "template", "the", "this", "use", "user", "when", "world", "write", "yes",
+]);
+
+function isLikelyGenericCharacterLabel(name) {
+    const str = normalizeScopeLabel(name);
+    if (!str) return true;
+    if (GENERIC_CHARACTER_LABEL_PATTERN.test(str)) return true;
+    const words = str.split(/[^A-Za-z0-9]+/).filter(Boolean);
+    if (!words.length) return true;
+    return words.length >= 3 && words.every(word => word === word.toLowerCase());
+}
+
+function sanitizeExtractedCharacterName(name) {
+    const str = normalizeScopeLabel(name).replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "");
+    if (!str || str.length < 2 || str.length > 48) return "";
+    if (/^\d+$/.test(str)) return "";
+    if (CHARACTER_NAME_STOPWORDS.has(str.toLowerCase())) return "";
+    if (isLikelyGenericCharacterLabel(str)) return "";
+    return str;
+}
+
+function extractLikelyCharacterNames(text) {
+    const source = String(text || "");
+    if (!source.trim()) return [];
+
+    const weights = new Map();
+    const add = (candidate, weight = 1) => {
+        const name = sanitizeExtractedCharacterName(candidate);
+        if (!name) return;
+        weights.set(name, (weights.get(name) || 0) + weight);
+    };
+
+    const patterns = [
+        { regex: /(?:^|\n)\s*([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){0,2})\s*:/gm, weight: 3 },
+        { regex: /\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){0,2})\b(?=\s*,\s*(?:an?|the)\b)/g, weight: 3 },
+        { regex: /\bnamed\s+([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){0,2})\b/g, weight: 3 },
+        { regex: /\(([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){0,2})\)/g, weight: 2 },
+        { regex: /\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){0,2})\b(?=\s+(?:is|wears|has|stands|sits|runs|walks|leans|looks|smiles|frowns|grimaces|massages|props|stops|turns|glances|thinks|said|says)\b)/g, weight: 2 },
+    ];
+
+    for (const { regex, weight } of patterns) {
+        for (const match of source.matchAll(regex)) {
+            add(match[1], weight);
+        }
+    }
+
+    return [...weights.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([name]) => name);
+}
+
 function getCharacterCardTags(charData) {
     if (!charData) return [];
     if (Array.isArray(charData.tags)) {
@@ -2497,7 +2553,11 @@ function getActiveCharacterScopeIds(ctx = getContext()) {
 }
 
 function resolveContextualFilterText(value) {
-    return resolvePrompt(value).trim();
+    const profile = getPromptAwareProfileContext(resolveChatProfileContext());
+    return resolvePrompt(value, {
+        charName: profile.charNameJoined,
+        userName: profile.userName,
+    }).trim();
 }
 
 function resolveContextualFilter(filter) {
@@ -2516,16 +2576,16 @@ function resolveContextualFilter(filter) {
 
 function enrichSceneTextForFilters(sceneText, label = "Contextual filters") {
     const base = String(sceneText || "").trim();
-    const profile = resolveChatProfileContext();
+    const profile = getPromptAwareProfileContext(resolveChatProfileContext(), base);
     const extraLines = [];
     if (profile.charNames.length) {
         extraLines.push(`Characters: ${profile.charNames.join(", ")}`);
     }
-    if (profile.charDescCombined) {
-        extraLines.push(`Character profiles:\n${truncateForContext(profile.charDescCombined, 1800)}`);
+    if (profile.charDescResolved) {
+        extraLines.push(`Character profiles:\n${truncateForContext(profile.charDescResolved, 1800)}`);
     }
-    if (profile.userDesc) {
-        extraLines.push(`${profile.userName} profile: ${truncateForContext(profile.userDesc, 600)}`);
+    if (profile.userDescResolved) {
+        extraLines.push(`${profile.userName} profile: ${truncateForContext(profile.userDescResolved, 600)}`);
     }
     if (!extraLines.length) return base;
     const missingLines = extraLines.filter(line => !base.includes(line));
@@ -2556,13 +2616,46 @@ function getSettings() {
     return extension_settings[extensionName];
 }
 
-function resolvePrompt(template) {
+function resolvePrompt(template, overrides = null) {
     if (template == null) return "";
     const text = typeof template === "string" ? template : String(template);
     const profile = resolveChatProfileContext();
+    const resolvedOverrides = overrides && typeof overrides === "object" ? overrides : {};
+    const charName = String(resolvedOverrides.charName || profile.charNameJoined || "character");
+    const userName = String(resolvedOverrides.userName || profile.userName || "user");
     return text
-        .replace(/\{\{char\}\}/gi, profile.charNameJoined || "character")
-        .replace(/\{\{user\}\}/gi, profile.userName || "user");
+        .replace(/\{\{char\}\}/gi, charName)
+        .replace(/\{\{user\}\}/gi, userName);
+}
+
+function getPromptAwareProfileContext(profile, sceneText = "") {
+    const sourceProfile = profile || resolveChatProfileContext();
+    const userName = String(sourceProfile.userName || "").trim() || "user";
+    const baseNames = uniqueStringList(sourceProfile.charNames || []);
+    const discoveredNames = uniqueStringList([
+        ...extractLikelyCharacterNames(sourceProfile.charDescCombined || ""),
+        ...extractLikelyCharacterNames(sourceProfile.charScenarioCombined || ""),
+        ...extractLikelyCharacterNames(sourceProfile.charTagsCombined || ""),
+        ...extractLikelyCharacterNames(sceneText || ""),
+    ])
+        .filter(name => normalizeContextLookupValue(name) !== normalizeContextLookupValue(userName))
+        .slice(0, 4);
+    const nonGenericBaseNames = baseNames.filter(name => !isLikelyGenericCharacterLabel(name));
+    const charNames = nonGenericBaseNames.length
+        ? uniqueStringList([...nonGenericBaseNames, ...discoveredNames])
+        : (discoveredNames.length ? discoveredNames : baseNames);
+    const charNameJoined = charNames.length ? charNames.join(", ") : (sourceProfile.charNameJoined || "character");
+
+    return {
+        ...sourceProfile,
+        userName,
+        charNames,
+        charNameJoined,
+        charDescResolved: resolvePrompt(sourceProfile.charDescCombined || "", { charName: charNameJoined, userName }),
+        charScenarioResolved: resolvePrompt(sourceProfile.charScenarioCombined || "", { charName: charNameJoined, userName }),
+        charTagsResolved: resolvePrompt(sourceProfile.charTagsCombined || "", { charName: charNameJoined, userName }),
+        userDescResolved: resolvePrompt(sourceProfile.userDesc || "", { charName: charNameJoined, userName }),
+    };
 }
 
 function expandWildcards(text) {
@@ -3247,7 +3340,11 @@ async function populatePresetList(selectId, selectedPreset) {
 }
 
 function getResolvedLLMPrefill(settings = getSettings()) {
-    return resolvePrompt(settings?.llmPrefill ?? "");
+    const profile = getPromptAwareProfileContext(resolveChatProfileContext());
+    return resolvePrompt(settings?.llmPrefill ?? "", {
+        charName: profile.charNameJoined,
+        userName: profile.userName,
+    });
 }
 
 function promptIncludesName(text, name) {
@@ -3294,13 +3391,13 @@ async function generateLLMPrompt(s, basePrompt, signal) {
 
     try {
         const ctx = getContext();
-        const profile = resolveChatProfileContext(ctx);
+        const profile = getPromptAwareProfileContext(resolveChatProfileContext(ctx), basePrompt);
         const charName = profile.charNameJoined || "character";
         const userName = profile.userName || "user";
-        const charDesc = profile.charDescCombined || "";
-        const userPersona = profile.userDesc || "";
-        const scenario = profile.charScenarioCombined || "";
-        const tags = profile.charTagsCombined || "";
+        const charDesc = profile.charDescResolved || "";
+        const userPersona = profile.userDescResolved || "";
+        const scenario = profile.charScenarioResolved || "";
+        const tags = profile.charTagsResolved || "";
         const activeCharacterNames = uniqueStringList(profile.charNames || []);
         const activeCharacterList = activeCharacterNames.join(", ");
         const resolvedPrefill = getResolvedLLMPrefill(s);
@@ -3312,17 +3409,17 @@ async function generateLLMPrompt(s, basePrompt, signal) {
         if (userSkin) skinTones.push(`${userName}: ${userSkin[0]}`);
 
         let appearanceContext = "";
-        if (charDesc) appearanceContext += `${charName}'s appearance: ${charDesc.substring(0, 1500)}\n`;
-        if (userPersona) appearanceContext += `${userName}'s appearance: ${userPersona.substring(0, 800)}\n`;
+        if (charDesc) appearanceContext += `Character profiles:\n${charDesc.substring(0, 1500)}\n`;
+        if (userPersona) appearanceContext += `${userName} profile: ${userPersona.substring(0, 800)}\n`;
         if (tags) appearanceContext += `Source/Tags: ${tags}\n`;
         if (scenario) appearanceContext += `Setting: ${scenario.substring(0, 400)}\n`;
 
         const skinEnforce = skinTones.length ? `\nCRITICAL - You MUST include these skin tones: ${skinTones.join(", ")}` : "";
         const exactNameRequirement = activeCharacterNames.length
-            ? `\n- Preserve and include these exact active character name${activeCharacterNames.length === 1 ? "" : "s"} when they are the subject of the scene: ${activeCharacterList}`
+            ? `\n- Preserve and include these exact character name${activeCharacterNames.length === 1 ? "" : "s"} when the scene/card identifies them: ${activeCharacterList}`
             : "";
         const exactNameBlock = activeCharacterNames.length
-            ? `\nACTIVE CHARACTER NAMES (use these exact spellings when applicable): ${activeCharacterList}`
+            ? `\nCHARACTER NAMES TO PRESERVE (use these exact spellings when applicable): ${activeCharacterList}`
             : "";
 
         const isNatural = s.llmPromptStyle === "natural";

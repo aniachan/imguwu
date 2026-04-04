@@ -3401,6 +3401,13 @@ async function generateLLMPrompt(s, basePrompt, signal) {
         const activeCharacterNames = uniqueStringList(profile.charNames || []);
         const activeCharacterList = activeCharacterNames.join(", ");
         const resolvedPrefill = getResolvedLLMPrefill(s);
+        const sceneUsesFirstPersonUser = /\b(i|me|my|mine|myself)\b/i.test(basePrompt);
+        const sceneMentionsUserByName = promptIncludesName(basePrompt, userName);
+        const sceneMentionedCharacterNames = activeCharacterNames.filter(name => promptIncludesName(basePrompt, name));
+        const sceneCentersUserAppearance = /\b(reflection|mirror|mirrored|view(?:ing)?\s+my\s+reflection|look(?:ing)?\s+at\s+myself|my\s+(?:face|body|figure|appearance|skin|eyes|reflection))\b/i.test(basePrompt);
+        const sceneIncludesUserPersona = !!userPersona && (sceneUsesFirstPersonUser || sceneMentionsUserByName);
+        const shouldDeprioritizeUnmentionedCharacters = sceneIncludesUserPersona && !sceneMentionedCharacterNames.length;
+        const userLikelyPrimarySubject = sceneIncludesUserPersona && sceneCentersUserAppearance;
 
         const skinTones = [];
         const charSkin = charDesc.match(skinPattern);
@@ -3408,18 +3415,66 @@ async function generateLLMPrompt(s, basePrompt, signal) {
         if (charSkin) skinTones.push(`${charName}: ${charSkin[0]}`);
         if (userSkin) skinTones.push(`${userName}: ${userSkin[0]}`);
 
-        let appearanceContext = "";
-        if (charDesc) appearanceContext += `Character profiles:\n${charDesc.substring(0, 1500)}\n`;
-        if (userPersona) appearanceContext += `${userName} profile: ${userPersona.substring(0, 800)}\n`;
-        if (tags) appearanceContext += `Source/Tags: ${tags}\n`;
-        if (scenario) appearanceContext += `Setting: ${scenario.substring(0, 400)}\n`;
+        const appearanceSections = [];
+        if (sceneIncludesUserPersona && userPersona) {
+            appearanceSections.push(`User persona (${userName}; applies to first-person references like I/me/my): ${userPersona.substring(0, 800)}`);
+        }
+        if (charDesc) {
+            const charProfileLabel = shouldDeprioritizeUnmentionedCharacters
+                ? "Secondary active character profiles (only use if the scene clearly includes them):"
+                : "Character profiles:";
+            appearanceSections.push(`${charProfileLabel}\n${charDesc.substring(0, 1500)}`);
+        }
+        if (!sceneIncludesUserPersona && userPersona) {
+            appearanceSections.push(`User persona (${userName}; applies to first-person references like I/me/my): ${userPersona.substring(0, 800)}`);
+        }
+        if (tags) appearanceSections.push(`Source/Tags: ${tags}`);
+        if (scenario) appearanceSections.push(`Setting: ${scenario.substring(0, 400)}`);
+        let appearanceContext = appearanceSections.join("\n");
+        if (appearanceContext) appearanceContext += "\n";
 
         const skinEnforce = skinTones.length ? `\nCRITICAL - You MUST include these skin tones: ${skinTones.join(", ")}` : "";
         const exactNameRequirement = activeCharacterNames.length
-            ? `\n- Preserve and include these exact character name${activeCharacterNames.length === 1 ? "" : "s"} when the scene/card identifies them: ${activeCharacterList}`
+            ? `\n- Preserve and include these exact character name${activeCharacterNames.length === 1 ? "" : "s"} when the scene/card identifies them${shouldDeprioritizeUnmentionedCharacters ? "; otherwise do not force them into the prompt just because they are the active chat character" : ""}: ${activeCharacterList}`
+            : "";
+        const exactUserRequirement = userPersona
+            ? `\n- If the scene refers to the user in first person or by name, preserve and include the exact user persona name when applicable: ${userName}`
             : "";
         const exactNameBlock = activeCharacterNames.length
-            ? `\nCHARACTER NAMES TO PRESERVE (use these exact spellings when applicable): ${activeCharacterList}`
+            ? `\n${shouldDeprioritizeUnmentionedCharacters ? "ACTIVE CHARACTER NAMES (only use if the scene explicitly includes them):" : "CHARACTER NAMES TO PRESERVE (use these exact spellings when applicable):"} ${activeCharacterList}`
+            : "";
+        const userNameBlock = userPersona
+            ? `\nUSER PERSONA NAME (use when the scene refers to the user / I / me / my): ${userName}`
+            : "";
+        const identityRequirements = [
+            "- Preserve any explicit age, age range, species, creature type, race, or persona/body traits from the scene or profile.",
+            "- Do NOT flatten specific identities into generic labels like man, woman, person, human, teen, adult, boy, or girl when more specific information is available.",
+            "- If a subject is non-human or from a known fantasy/franchise species, keep that identity in the prompt instead of humanizing it.",
+        ];
+        if (userPersona) {
+            identityRequirements.push(`- If the scene uses first-person references like I/me/my or mentions ${userName}, that subject is the user persona described below. Use that persona's age, species, body type, and nonhuman traits.`);
+        }
+        const identityRequirementBlock = `\nIDENTITY REQUIREMENTS:\n${identityRequirements.join("\n")}`;
+        const subjectPriorityRequirements = [];
+        if (sceneIncludesUserPersona) {
+            subjectPriorityRequirements.push(`- The user persona (${userName}) is visually involved in this scene whenever the scene uses first-person references or the user name.`);
+            subjectPriorityRequirements.push("- Do NOT replace the user persona with a generic human label or with the active chat character's profile.");
+            subjectPriorityRequirements.push("- If the user persona is acting in the scene, depict them as a full subject when relevant instead of reducing them to a hand, claw, limb, silhouette, or other partial-body placeholder unless the scene explicitly calls for an off-screen POV framing.");
+        }
+        if (userLikelyPrimarySubject) {
+            subjectPriorityRequirements.push(`- Reflection/self-view scenes should treat the user persona (${userName}) as the primary visual subject and describe their full appearance.`);
+        }
+        if (shouldDeprioritizeUnmentionedCharacters) {
+            subjectPriorityRequirements.push("- Do not center the active chat character or inject their full profile unless the scene clearly includes them.");
+        }
+        if (sceneIncludesUserPersona && sceneMentionedCharacterNames.length) {
+            subjectPriorityRequirements.push(`- If both the user persona and another subject are present, preserve both identities accurately and do not let ${sceneMentionedCharacterNames.join(", ")} overshadow the user persona.`);
+        }
+        const subjectPriorityBlock = subjectPriorityRequirements.length
+            ? `\nSCENE SUBJECT PRIORITY:\n${subjectPriorityRequirements.join("\n")}`
+            : "";
+        const userSceneRequirementBullet = userPersona
+            ? `\n- If the scene refers to the user in first person or by name, use the user persona reference below for that subject (${userName})`
             : "";
 
         const isNatural = s.llmPromptStyle === "natural";
@@ -3452,8 +3507,9 @@ async function generateLLMPrompt(s, basePrompt, signal) {
             if (skinEnforce) {
                 instruction += skinEnforce;
             }
-            if (exactNameRequirement) {
-                instruction += `\n\nACTIVE NAME REQUIREMENT:${exactNameRequirement}`;
+            instruction += `${identityRequirementBlock}${subjectPriorityBlock}`;
+            if (exactNameRequirement || exactUserRequirement) {
+                instruction += `\n\nNAME REQUIREMENTS:${exactNameRequirement}${exactUserRequirement}`;
             }
         } else if (wantsCustom) {
             log("Custom instruction selected but empty, falling back to tags style");
@@ -3482,12 +3538,14 @@ CRITICAL INSTRUCTIONS:
 [Output ONLY an image generation prompt. No commentary or explanation.]${skinEnforce}
 
 CHARACTER REFERENCE:
-${appearanceContext}${exactNameBlock}
+${appearanceContext}${exactNameBlock}${userNameBlock}${identityRequirementBlock}${subjectPriorityBlock}
 ${isMultiMessage ? "SCENE CONTEXT (multiple messages):\n" : "CURRENT SCENE: "}${basePrompt}
 
 Write a detailed image prompt describing:
 - The characters involved with their defining visual traits (hair color, eye color, outfit, distinguishing features)
 - Use the exact active character names when the scene/card identifies them${activeCharacterNames.length ? ` (${activeCharacterList})` : ""}
+${userSceneRequirementBullet}
+- Preserve explicit ages, species, creature types, and nonhuman identities from the scene/profile instead of replacing them with generic human labels
 - If from known media/franchise, include the series name and character's canonical appearance
 - Their poses, expressions, and body language
 - The setting/background
@@ -3541,10 +3599,12 @@ WRONG (DO NOT do this):
 
 Create Danbooru/Booru-style tags for this ${isMultiMessage ? "scene context:\n" : "scene: "}${basePrompt}
 
-Character info: ${appearanceContext}${exactNameBlock}
+Character info: ${appearanceContext}${exactNameBlock}${userNameBlock}${identityRequirementBlock}${subjectPriorityBlock}
 
 Required tag categories:
 - Character name + series name (CRITICAL: Use recognizable fictional media character tags whenever recognized, and keep exact active names like ${activeCharacterList || "the named character"} when no canonical tag exists)
+${userSceneRequirementBullet}
+- Preserve explicit ages, species, creature types, and nonhuman identities from the scene/profile instead of replacing them with generic human tags
 - Physical traits (hair, eyes, body, skin)
 - Clothing and accessories
 - Pose and expression

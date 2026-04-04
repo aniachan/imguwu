@@ -5,6 +5,11 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.10
+- Improved helper-LLM subject prioritization so scenes involving `{{user}}` / first-person references no longer default so aggressively to the active `{{char}}` profile.
+- User personas now get stronger identity-preservation guidance for age, species, and nonhuman traits, helping prevent prompts from collapsing them into generic labels like `man`, `woman`, or partial-body placeholders such as a `green claw`.
+- Reflection/self-view scenes and mixed user+character scenes now more explicitly preserve the user persona as a full visual subject instead of letting the active chat character dominate the prompt.
+
 ## What's New in v1.8.9
 - Improved LLM prompt-generation name handling when `{{char}}` would otherwise resolve to a generic world-card or scenario label like `Slice of life` or `Suburban roleplay`.
 - QIG now tries to preserve real character names it can infer from the active card/profile/scene text, which helps generated prompts and name-based contextual filters stay anchored to the actual character instead of the lorebook/world-card title.

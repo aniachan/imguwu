@@ -5,6 +5,10 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.22
+- Fixed manual insert targeting after generation from a selected chat message like `-1`, so popup/manual inserts keep the actual source message instead of falling back to the global insert target.
+- Single-message scene selections now carry their source message index through generation, regeneration, and insert flows more consistently.
+
 ## What's New in v1.8.21
 - Fixed custom LLM instruction mode so selected scene text is still sent when a custom prompt forgets to include `{{scene}}`.
 - Added a compatibility fallback that auto-appends the selected scene in custom mode instead of silently generating from card/profile context alone.

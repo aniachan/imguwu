@@ -12404,9 +12404,16 @@ async function generateImage() {
     const s = getSettings();
     const cancelCheckpoint = getCancelCheckpoint();
     const originalSeed = getGenerationSeedValue(s);
-    const activeMessageTarget = getTransientGenerationTarget();
-    const sourceMessageIndexForEntries = Number.isInteger(activeMessageTarget?.messageIndex) ? activeMessageTarget.messageIndex : null;
+    const ctx = getContext();
+    const activeMessageTarget = getTransientGenerationTarget(ctx);
     const useChatMessageScene = shouldUseChatMessageScene(s);
+    const selectedSceneEntries = useChatMessageScene ? getSceneMessageEntries(s, ctx) : [];
+    const sceneSelectionMessageIndex = selectedSceneEntries.length === 1 && Number.isInteger(selectedSceneEntries[0]?.index)
+        ? selectedSceneEntries[0].index
+        : null;
+    const sourceMessageIndexForEntries = Number.isInteger(activeMessageTarget?.messageIndex)
+        ? activeMessageTarget.messageIndex
+        : sceneSelectionMessageIndex;
 
     try {
     checkAborted(cancelCheckpoint);
@@ -12426,11 +12433,11 @@ async function generateImage() {
     lastGenerationSourceMessageIndex = Number.isInteger(sourceMessageIndexForEntries) ? sourceMessageIndexForEntries : null;
 
     if (Number.isInteger(sourceMessageIndexForEntries)) {
-        log(`Manual message target: Generating from chat message ${sourceMessageIndexForEntries}`);
+        log(`${Number.isInteger(activeMessageTarget?.messageIndex) ? "Manual message target" : "Scene selection target"}: Generating from chat message ${sourceMessageIndexForEntries}`);
     }
 
     if (useChatMessageScene) {
-        const messages = getMessages(s, getContext?.(), { logDebug: true });
+        const messages = getMessages(s, ctx, { logDebug: true });
         if (messages) {
             scenePrompt = messages;
             basePrompt = messages;
@@ -12446,7 +12453,7 @@ async function generateImage() {
     }
 
     if (s.provider === "proxy" && useChatMessageScene) {
-        chatContextProxyRefImages = await collectChatContextProxyRefImages(s);
+        chatContextProxyRefImages = await collectChatContextProxyRefImages(s, ctx);
         checkAborted(cancelCheckpoint);
     }
     lastProxyContextRefImages = [...chatContextProxyRefImages];

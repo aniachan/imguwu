@@ -186,6 +186,10 @@ const defaultSettings = {
     // Together AI
     togetherKey: "",
     togetherModel: "stabilityai/stable-diffusion-xl-base-1.0",
+    // Z.AI
+    zaiKey: "",
+    zaiModel: "cogview-4-250304",
+    zaiQuality: "hd",
     // Pollinations
     pollinationsModel: "",
     // Local (A1111/ComfyUI)
@@ -926,6 +930,7 @@ const PROVIDER_KEYS = {
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
+    zai: ["zaiKey", "zaiModel", "zaiQuality"],
     local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Scheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111AdetailerDenoise", "a1111AdetailerConfidence", "a1111AdetailerMaskBlur", "a1111AdetailerDilateErode", "a1111AdetailerInpaintOnlyMasked", "a1111AdetailerInpaintPadding", "a1111Adetailer2", "a1111Adetailer2Model", "a1111Adetailer2Prompt", "a1111Adetailer2Negative", "a1111Adetailer2Denoise", "a1111Adetailer2Confidence", "a1111Adetailer2MaskBlur", "a1111Adetailer2DilateErode", "a1111Adetailer2InpaintOnlyMasked", "a1111Adetailer2InpaintPadding", "a1111Loras", "a1111Vae", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111HiresSampler", "a1111HiresScheduler", "a1111HiresPrompt", "a1111HiresNegative", "a1111HiresResizeX", "a1111HiresResizeY", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "a1111ControlNet", "a1111ControlNetModel", "a1111ControlNetModule", "a1111ControlNetWeight", "a1111ControlNetResizeMode", "a1111ControlNetControlMode", "a1111ControlNetPixelPerfect", "a1111ControlNetGuidanceStart", "a1111ControlNetGuidanceEnd", "a1111ControlNetImage", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyScheduler", "comfyTimeout", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages", "proxyEndpointMode", "proxyPayloadMode", "proxyRefImageMode", "proxySse", "proxyComfyMode", "proxyComfyTimeout", "proxyComfyNodeId", "proxyComfyWorkflow"]
 };
@@ -942,6 +947,7 @@ const PROVIDERS = {
     replicate: { name: "Replicate", needsKey: true },
     fal: { name: "Fal.ai", needsKey: true },
     together: { name: "Together AI", needsKey: true },
+    zai: { name: "Z.AI", needsKey: true },
     local: { name: "Local (A1111/ComfyUI)", needsKey: false },
     proxy: { name: "Reverse Proxy (OpenAI-compatible)", needsKey: false }
 };
@@ -1616,6 +1622,10 @@ const PROVIDER_MODELS = {
         { id: "", name: "Default" },
         { id: "flux", name: "Flux" },
         { id: "turbo", name: "Turbo" }
+    ],
+    zai: [
+        { id: "cogview-4-250304", name: "CogView 4" },
+        { id: "glm-image", name: "GLM Image" }
     ]
 };
 
@@ -7248,6 +7258,31 @@ async function genTogether(prompt, negative, s, signal) {
     throw new Error("No image in response");
 }
 
+async function genZai(prompt, negative, s, signal) {
+    if (!s.zaiKey) throw new Error("Z.AI API key required");
+    const res = await fetch("https://api.z.ai/api/paas/v4/images/generations", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${s.zaiKey}`
+        },
+        body: JSON.stringify({
+            model: s.zaiModel || "cogview-4-250304",
+            prompt: prompt,
+            quality: s.zaiQuality || "hd",
+            size: `${s.width}x${s.height}`
+        }),
+        signal
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(`Z.AI error ${res.status}: ${err.message || res.statusText}`);
+    }
+    const data = await res.json();
+    if (data.data?.[0]?.url) return data.data[0].url;
+    throw new Error("No image in Z.AI response");
+}
+
 const providerGenerators = {
     pollinations: genPollinations,
     novelai: genNovelAI,
@@ -7260,6 +7295,7 @@ const providerGenerators = {
     replicate: genReplicate,
     fal: genFal,
     together: genTogether,
+    zai: genZai,
     local: genLocal,
     comfyui: genLocal,
     proxy: genProxy
@@ -10026,6 +10062,11 @@ function refreshProviderInputs(provider) {
         chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-model", "chutesModel"]],
         civitai: [["qig-civitai-key", "civitaiKey"], ["qig-civitai-model", "civitaiModel"], ["qig-civitai-scheduler", "civitaiScheduler"], ["qig-civitai-loras", "civitaiLoras"]],
         nanobanana: [["qig-nanobanana-key", "nanobananaKey"], ["qig-nanobanana-model", "nanobananaModel"], ["qig-nanobanana-extra", "nanobananaExtraInstructions"]],
+        stability: [["qig-stability-key", "stabilityKey"]],
+        replicate: [["qig-replicate-key", "replicateKey"], ["qig-replicate-model", "replicateModel"]],
+        fal: [["qig-fal-key", "falKey"], ["qig-fal-model", "falModel"]],
+        together: [["qig-together-key", "togetherKey"], ["qig-together-model", "togetherModel"]],
+        zai: [["qig-zai-key", "zaiKey"], ["qig-zai-model", "zaiModel"], ["qig-zai-quality", "zaiQuality"]],
         local: [
             ["qig-local-url", "localUrl"],
             ["qig-local-type", "localType"],
@@ -10513,7 +10554,20 @@ function createUI() {
                     <label>Model</label>
                     <input id="qig-together-model" type="text" value="${esc(s.togetherModel)}" placeholder="stabilityai/stable-diffusion-xl-base-1.0">
                 </div>
-                
+
+                <div id="qig-zai-settings" class="qig-provider-section">
+                    <label>Z.AI API Key</label>
+                    <input id="qig-zai-key" type="password" value="${esc(s.zaiKey)}">
+                    <label>Model</label>
+                    ${modelSelect("zai", "zai-model", s.zaiModel)}
+                    <label>Quality</label>
+                    <select id="qig-zai-quality">
+                        <option value="hd" ${s.zaiQuality === "hd" ? "selected" : ""}>HD (slower, more detail)</option>
+                        <option value="standard" ${s.zaiQuality === "standard" ? "selected" : ""}>Standard (faster)</option>
+                    </select>
+                    <div class="form-hint">Image URLs expire after 30 days. Sizes are constrained per-model.</div>
+                </div>
+
                 <div id="qig-local-settings" class="qig-provider-section">
                     <label>Local URL</label>
                     <input id="qig-local-url" type="text" value="${esc(s.localUrl)}" placeholder="http://127.0.0.1:7860">
@@ -11305,6 +11359,9 @@ function createUI() {
     bind("qig-fal-model", "falModel");
     bind("qig-together-key", "togetherKey");
     bind("qig-together-model", "togetherModel");
+    bind("qig-zai-key", "zaiKey");
+    bind("qig-zai-model", "zaiModel");
+    bind("qig-zai-quality", "zaiQuality");
     bind("qig-local-url", "localUrl");
     bind("qig-local-model", "localModel");
     document.getElementById("qig-local-model").addEventListener("change", (e) => {

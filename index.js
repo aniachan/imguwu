@@ -159,6 +159,15 @@ const defaultSettings = {
     naiModel: "nai-diffusion-4-5-curated",
     naiProxyUrl: "",
     naiProxyKey: "",
+    // OpenAI GPT Image
+    gptImageKey: "",
+    gptImageModel: "gpt-image-2",
+    gptImageProxyUrl: "",
+    gptImageProxyKey: "",
+    gptImageQuality: "auto",
+    gptImageFormat: "png",
+    gptImageBackground: "auto",
+    gptImageModeration: "auto",
     // ArliAI
     arliKey: "",
     arliModel: "arliai-realistic-v1",
@@ -918,6 +927,7 @@ function customInstructionHasMacro(template, macroName) {
 const PROVIDER_KEYS = {
     pollinations: ["pollinationsKey", "pollinationsModel"],
     novelai: ["naiKey", "naiModel", "naiProxyUrl", "naiProxyKey"],
+    gptimage: ["gptImageKey", "gptImageModel", "gptImageProxyUrl", "gptImageProxyKey", "gptImageQuality", "gptImageFormat", "gptImageBackground", "gptImageModeration"],
     arliai: ["arliKey", "arliModel"],
     nanogpt: ["nanogptKey", "nanogptModel", "nanogptRefImages", "nanogptStrength"],
     chutes: ["chutesKey", "chutesModel"],
@@ -935,6 +945,7 @@ const PROVIDER_KEYS = {
 const PROVIDERS = {
     pollinations: { name: "Pollinations (Free + Paid)", needsKey: false },
     novelai: { name: "NovelAI", needsKey: true },
+    gptimage: { name: "GPT Image (OpenAI)", needsKey: true },
     arliai: { name: "ArliAI", needsKey: true },
     nanogpt: { name: "NanoGPT", needsKey: true },
     chutes: { name: "Chutes", needsKey: true },
@@ -1648,6 +1659,12 @@ const PROVIDER_MODELS = {
         { id: "flux", name: "Flux" },
         { id: "turbo", name: "Turbo" },
         { id: "xiaolong", name: "Xiaolong" }
+    ],
+    gptimage: [
+        { id: "gpt-image-2", name: "GPT Image 2" },
+        { id: "gpt-image-1.5", name: "GPT Image 1.5" },
+        { id: "gpt-image-1", name: "GPT Image 1" },
+        { id: "gpt-image-1-mini", name: "GPT Image 1 Mini" }
     ],
     zai: [
         { id: "cogview-4-250304", name: "CogView 4" },
@@ -4816,6 +4833,121 @@ async function genNovelAI(prompt, negative, s, signal) {
     { const u = URL.createObjectURL(new Blob([pngData], { type: "image/png" })); blobUrls.add(u); return u; }
 }
 
+function getGptImageApiUrl(proxyUrl = "") {
+    const trimmed = String(proxyUrl || "").trim().replace(/\/$/, "");
+    if (!trimmed) return "https://api.openai.com/v1/images/generations";
+    return resolveProxyRequestUrl(trimmed, "images_generations");
+}
+
+function getGptImageSize(settings = getSettings()) {
+    const width = Number(settings?.width) || 1024;
+    const height = Number(settings?.height) || 1024;
+    if (width === height) return "1024x1024";
+    return width > height ? "1536x1024" : "1024x1536";
+}
+
+function getGptImageMime(format = "png") {
+    const normalized = String(format || "png").trim().toLowerCase();
+    if (normalized === "jpeg" || normalized === "jpg") return "image/jpeg";
+    if (normalized === "webp") return "image/webp";
+    return "image/png";
+}
+
+function normalizeGptImageFormat(format = "png") {
+    const normalized = String(format || "png").trim().toLowerCase();
+    if (normalized === "jpg") return "jpeg";
+    return ["png", "jpeg", "webp"].includes(normalized) ? normalized : "png";
+}
+
+function normalizeGptImageOption(value, allowed, fallback = "auto") {
+    const normalized = String(value || fallback).trim().toLowerCase();
+    return allowed.includes(normalized) ? normalized : fallback;
+}
+
+function extractGptImageDataUrl(value, format = "png") {
+    if (typeof value !== "string" || !value.trim()) return null;
+    const b64 = value.trim();
+    return b64.startsWith("data:")
+        ? b64
+        : `data:${getGptImageMime(format)};base64,${b64}`;
+}
+
+function extractGptImageFromJson(data, format = "png") {
+    const dataItem = data?.data?.[0];
+    const b64Candidates = [
+        dataItem?.b64_json,
+        dataItem?.image_base64,
+        dataItem?.imageBase64,
+        dataItem?.base64,
+        data?.b64_json,
+        data?.image_base64,
+        data?.imageBase64,
+        data?.base64,
+    ];
+    for (const candidate of b64Candidates) {
+        const image = extractGptImageDataUrl(candidate, format);
+        if (image) return image;
+    }
+
+    const image = extractProxyImageFromJson(data);
+    if (image) return image;
+
+    throw new Error(`GPT Image returned no image: ${JSON.stringify(data || {}).substring(0, 300)}`);
+}
+
+async function genGptImage(prompt, negative, s, signal) {
+    const apiKey = s.gptImageProxyKey || s.gptImageKey;
+    if (!apiKey) throw new Error("GPT Image API key required");
+
+    const apiUrl = getGptImageApiUrl(s.gptImageProxyUrl);
+    if (!apiUrl) throw new Error("GPT Image API URL is required");
+
+    const model = String(s.gptImageModel || "gpt-image-2").trim();
+    const outputFormat = normalizeGptImageFormat(s.gptImageFormat);
+    const quality = normalizeGptImageOption(s.gptImageQuality, ["auto", "low", "medium", "high"]);
+    const background = normalizeGptImageOption(s.gptImageBackground, ["auto", "transparent", "opaque"]);
+    const moderation = normalizeGptImageOption(s.gptImageModeration, ["auto", "low"]);
+    const effectivePrompt = negative
+        ? `${prompt}\n\nAvoid in the image: ${negative}`
+        : prompt;
+    const payload = {
+        model,
+        prompt: effectivePrompt,
+        size: getGptImageSize(s),
+        n: 1,
+    };
+
+    if (quality !== "auto") payload.quality = quality;
+    if (outputFormat !== "png") payload.output_format = outputFormat;
+    if (background !== "auto") {
+        if (background === "transparent" && outputFormat === "jpeg") {
+            log("GPT Image: transparent backgrounds require PNG or WebP output; omitting background for JPEG.");
+        } else {
+            payload.background = background;
+        }
+    }
+    if (moderation !== "auto") payload.moderation = moderation;
+
+    log(`GPT Image request to ${apiUrl}: model=${model}, size=${payload.size}, quality=${payload.quality || "auto"}, format=${payload.output_format || "png"}`);
+    const res = await fetch(apiUrl, {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal,
+    });
+
+    if (!res.ok) {
+        const detail = await readProxyErrorResponse(res);
+        throw new Error(`GPT Image error ${res.status}: ${detail || res.statusText}`);
+    }
+
+    const data = await res.json();
+    return extractGptImageFromJson(data, outputFormat);
+}
+
 function findPngStart(bytes) {
     for (let i = 0; i < bytes.length - 8; i++) {
         if (bytes[i] === 0x89 && bytes[i + 1] === 0x50 && bytes[i + 2] === 0x4E && bytes[i + 3] === 0x47) return i;
@@ -7353,6 +7485,7 @@ async function genZai(prompt, negative, s, signal) {
 const providerGenerators = {
     pollinations: genPollinations,
     novelai: genNovelAI,
+    gptimage: genGptImage,
     arliai: genArliAI,
     nanogpt: genNanoGPT,
     chutes: genChutes,
@@ -9765,6 +9898,7 @@ function refreshProviderInputs(provider) {
     const map = {
         pollinations: [["qig-pollinations-model", "pollinationsModel"]],
         novelai: [["qig-nai-key", "naiKey"], ["qig-nai-model", "naiModel"], ["qig-nai-proxy-url", "naiProxyUrl"], ["qig-nai-proxy-key", "naiProxyKey"]],
+        gptimage: [["qig-gpt-image-key", "gptImageKey"], ["qig-gpt-image-model", "gptImageModel"], ["qig-gpt-image-proxy-url", "gptImageProxyUrl"], ["qig-gpt-image-proxy-key", "gptImageProxyKey"], ["qig-gpt-image-quality", "gptImageQuality"], ["qig-gpt-image-format", "gptImageFormat"], ["qig-gpt-image-background", "gptImageBackground"], ["qig-gpt-image-moderation", "gptImageModeration"]],
         arliai: [["qig-arli-key", "arliKey"], ["qig-arli-model", "arliModel"]],
         nanogpt: [["qig-nanogpt-key", "nanogptKey"], ["qig-nanogpt-model", "nanogptModel"], ["qig-nanogpt-strength", "nanogptStrength"]],
         chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-model", "chutesModel"]],
@@ -10120,6 +10254,25 @@ function pollinationsModelInput(currentVal) {
     `;
 }
 
+function gptImageModelInput(currentVal) {
+    const value = escapeHtml(currentVal ?? "");
+    const knownIds = new Set();
+    const options = [];
+    for (const model of PROVIDER_MODELS.gptimage || []) {
+        if (!model?.id || knownIds.has(model.id)) continue;
+        knownIds.add(model.id);
+        options.push(`<option value="${escapeHtml(model.id)}" label="${escapeHtml(model.name || model.id)}"></option>`);
+    }
+    const normalizedCurrent = String(currentVal ?? "").trim();
+    if (normalizedCurrent && !knownIds.has(normalizedCurrent)) {
+        options.push(`<option value="${escapeHtml(normalizedCurrent)}" label="${escapeHtml(`${normalizedCurrent} - current custom model`)}"></option>`);
+    }
+    return `
+        <input id="qig-gpt-image-model" type="text" list="qig-gpt-image-model-list" value="${value}" placeholder="gpt-image-2">
+        <datalist id="qig-gpt-image-model-list">${options.join("")}</datalist>
+    `;
+}
+
 function buildOptions(items, selectedValue, labelFn) {
     return items.map(([k, v]) =>
         `<option value="${k}" ${selectedValue === k ? "selected" : ""}>${labelFn ? labelFn(v) : v}</option>`
@@ -10187,6 +10340,55 @@ function createUI() {
                     <input id="qig-nai-proxy-url" type="text" value="${esc(s.naiProxyUrl)}" placeholder="https://your-proxy-url">
                     <label>Proxy Key <small>(optional — overrides API key above for proxy)</small></label>
                     <input id="qig-nai-proxy-key" type="password" value="${esc(s.naiProxyKey)}" placeholder="Leave blank to use API key above">
+                </div>
+
+                <div id="qig-gptimage-settings" class="qig-provider-section">
+                    <label>OpenAI API Key</label>
+                    <input id="qig-gpt-image-key" type="password" value="${esc(s.gptImageKey)}" placeholder="sk-...">
+                    <label>Model</label>
+                    ${gptImageModelInput(s.gptImageModel)}
+                    <small style="opacity:0.6;font-size:10px;">Defaults to <code>gpt-image-2</code>. You can type any compatible model ID for proxies.</small>
+                    <label>Proxy URL <small>(optional — leave blank to use official OpenAI API)</small></label>
+                    <input id="qig-gpt-image-proxy-url" type="text" value="${esc(s.gptImageProxyUrl)}" placeholder="https://your-proxy-url/v1">
+                    <label>Proxy Key <small>(optional — overrides API key above for proxy)</small></label>
+                    <input id="qig-gpt-image-proxy-key" type="password" value="${esc(s.gptImageProxyKey)}" placeholder="Leave blank to use API key above">
+                    <div class="qig-row">
+                        <div>
+                            <label>Quality</label>
+                            <select id="qig-gpt-image-quality">
+                                <option value="auto" ${s.gptImageQuality === "auto" ? "selected" : ""}>Auto</option>
+                                <option value="low" ${s.gptImageQuality === "low" ? "selected" : ""}>Low</option>
+                                <option value="medium" ${s.gptImageQuality === "medium" ? "selected" : ""}>Medium</option>
+                                <option value="high" ${s.gptImageQuality === "high" ? "selected" : ""}>High</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Format</label>
+                            <select id="qig-gpt-image-format">
+                                <option value="png" ${s.gptImageFormat === "png" ? "selected" : ""}>PNG</option>
+                                <option value="jpeg" ${s.gptImageFormat === "jpeg" ? "selected" : ""}>JPEG</option>
+                                <option value="webp" ${s.gptImageFormat === "webp" ? "selected" : ""}>WebP</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="qig-row">
+                        <div>
+                            <label>Background</label>
+                            <select id="qig-gpt-image-background">
+                                <option value="auto" ${s.gptImageBackground === "auto" ? "selected" : ""}>Auto</option>
+                                <option value="transparent" ${s.gptImageBackground === "transparent" ? "selected" : ""}>Transparent</option>
+                                <option value="opaque" ${s.gptImageBackground === "opaque" ? "selected" : ""}>Opaque</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Moderation</label>
+                            <select id="qig-gpt-image-moderation">
+                                <option value="auto" ${s.gptImageModeration === "auto" ? "selected" : ""}>Auto</option>
+                                <option value="low" ${s.gptImageModeration === "low" ? "selected" : ""}>Low</option>
+                            </select>
+                        </div>
+                    </div>
+                    <small style="opacity:0.6;font-size:10px;">QIG maps the shared size controls to GPT Image sizes: square, landscape, or portrait. Transparent background works with PNG/WebP. Negative prompt text is appended as an avoid instruction.</small>
                 </div>
                 
                 <div id="qig-arliai-settings" class="qig-provider-section">
@@ -11027,6 +11229,14 @@ function createUI() {
     bind("qig-nai-model", "naiModel");
     bind("qig-nai-proxy-url", "naiProxyUrl");
     bind("qig-nai-proxy-key", "naiProxyKey");
+    bind("qig-gpt-image-key", "gptImageKey");
+    bind("qig-gpt-image-model", "gptImageModel");
+    bind("qig-gpt-image-proxy-url", "gptImageProxyUrl");
+    bind("qig-gpt-image-proxy-key", "gptImageProxyKey");
+    bind("qig-gpt-image-quality", "gptImageQuality");
+    bind("qig-gpt-image-format", "gptImageFormat");
+    bind("qig-gpt-image-background", "gptImageBackground");
+    bind("qig-gpt-image-moderation", "gptImageModeration");
     bind("qig-arli-key", "arliKey");
     bind("qig-arli-model", "arliModel");
     bind("qig-nanogpt-key", "nanogptKey");
@@ -13311,6 +13521,7 @@ function getProviderModelId(settings, provider = settings?.provider) {
     switch (provider) {
         case "pollinations": return settings?.pollinationsModel || "flux";
         case "novelai": return settings?.naiModel || null;
+        case "gptimage": return settings?.gptImageModel || null;
         case "arliai": return settings?.arliModel || null;
         case "nanogpt": return settings?.nanogptModel || null;
         case "chutes": return settings?.chutesModel || null;
@@ -13329,7 +13540,7 @@ function getProviderModelId(settings, provider = settings?.provider) {
 function getMetadataSettings(s, options = {}) {
     const provider = options.provider || s.provider;
     const isProxy = provider === "proxy";
-    const currentSeed = isProxy ? (s.proxySeed ?? s.seed) : s.seed;
+    const currentSeed = provider === "gptimage" ? undefined : (isProxy ? (s.proxySeed ?? s.seed) : s.seed);
     const seed = Number.isFinite(options.resolvedSeed)
         ? options.resolvedSeed
         : (Number.isFinite(currentSeed) && currentSeed >= 0 ? currentSeed : undefined);
@@ -13824,6 +14035,7 @@ async function handleMetadataDrop(e) {
                         s.pollinationsModel = params.model === "flux" ? "" : params.model;
                         break;
                     case "novelai": s.naiModel = params.model; break;
+                    case "gptimage": s.gptImageModel = params.model; break;
                     case "arliai": s.arliModel = params.model; break;
                     case "nanogpt": s.nanogptModel = params.model; break;
                     case "chutes": s.chutesModel = params.model; break;

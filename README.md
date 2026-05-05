@@ -1,13 +1,17 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern with 13 providers, 40+ styles, LLM prompt generation, connection profiles, generation presets, contextual filters, auto-insert, gallery, prompt history, PNG metadata, and settings export/import.
+One-click image generation for SillyTavern with 14 providers, 40+ styles, LLM prompt generation, connection profiles, generation presets, contextual filters, auto-insert, gallery, prompt history, PNG metadata, and settings export/import.
 
 Prompt Replacement Maps and Prompt Templates have been removed. Old prompt replacement data is migrated into Contextual Filters on load when possible.
 
 **Install:** Extensions -> Install from URL -> `https://github.com/platberlitz/sillytavern-image-gen`
 
-## What's New in v2.0.4
+## What's New in v2.0.5
+- Added GPT Image as its own provider, defaulting to `gpt-image-2`.
+- GPT Image supports optional reverse proxy URL/key overrides like NovelAI, plus quality, output format, background, and moderation controls.
+
+## Recent v2.0.4 Fixes
 - Reverse Proxy requests now have a configurable `Request Timeout` setting, defaulting to 600 seconds for slower image services like LinkAPI.
 
 ## Recent v2.0.3 Fixes
@@ -29,6 +33,7 @@ Prompt Replacement Maps and Prompt Templates have been removed. Old prompt repla
 ### Providers
 - Pollinations
 - NovelAI
+- GPT Image (OpenAI)
 - ArliAI
 - NanoGPT
 - Chutes

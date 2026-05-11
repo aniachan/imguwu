@@ -147,6 +147,13 @@ const NBP_DIRECTOR_PROMPTS = {
 const NBP_NEGATIVE_GUIDANCE = "Avoid wet-looking skin, oily shine, greasy gloss, plastic skin, blown white highlight patches, exaggerated redness, extra toes, fused toes, missing toes, malformed feet, broken ankles, extra limbs, missing limbs, stronger contrast than the source image, photorealistic face drift, flat cartoon simplification, text, watermark, and signature.";
 const NANOBANANA_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
 const NANOBANANA_FLASH31_EXTRA_RATIOS = ["1:4", "1:8", "4:1", "8:1"];
+const QIG_DEFAULT_COLLAPSED_SECTIONS = {
+    providerSettings: false,
+    promptAdvanced: false,
+    injectOptions: true,
+    advancedSettings: true,
+};
+let qigKeyboardShortcutsBound = false;
 
 function normalizeNbpDirectorPreset(value) {
     return NBP_DIRECTOR_PROMPTS[value] ? value : "house";
@@ -180,6 +187,72 @@ function buildNanobananaModelOptions(selectedModel) {
         options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(`${selected} (custom saved model)`)}</option>`);
     }
     return options.join("");
+}
+
+function getCollapsedSections(settings = getSettings()) {
+    const stored = settings?.collapsedSections && typeof settings.collapsedSections === "object"
+        ? settings.collapsedSections
+        : {};
+    return { ...QIG_DEFAULT_COLLAPSED_SECTIONS, ...stored };
+}
+
+function setCollapsedSection(sectionId, collapsed, { persist = true } = {}) {
+    const s = getSettings();
+    if (!s) return;
+    s.collapsedSections = { ...getCollapsedSections(s), [sectionId]: !!collapsed };
+    if (persist) saveSettingsDebounced?.();
+}
+
+function isEditableShortcutTarget(target) {
+    if (!target || !(target instanceof Element)) return false;
+    const tag = target.tagName?.toLowerCase();
+    return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
+}
+
+function bindQigKeyboardShortcuts() {
+    if (qigKeyboardShortcutsBound) return;
+    qigKeyboardShortcutsBound = true;
+    document.addEventListener("keydown", (event) => {
+        if (!(event.ctrlKey || event.metaKey) || event.altKey || isEditableShortcutTarget(event.target)) return;
+        const key = String(event.key || "").toLowerCase();
+        if (key === "enter") {
+            const generateBtn = document.getElementById("qig-generate-btn");
+            if (!generateBtn || generateBtn.disabled || isGenerating) return;
+            event.preventDefault();
+            runConfiguredPaletteGeneration();
+            return;
+        }
+        if (!event.shiftKey) return;
+        if (key === "g") {
+            event.preventDefault();
+            showGallery();
+        } else if (key === "h") {
+            event.preventDefault();
+            showPromptHistory();
+        }
+    });
+}
+
+function setupQigCollapsibleSection(sectionId, buttonId, contentId) {
+    const button = document.getElementById(buttonId);
+    const content = document.getElementById(contentId);
+    if (!button || !content) return;
+    const apply = (collapsed) => {
+        button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        content.hidden = collapsed;
+        content.classList.toggle("qig-collapsible__content--collapsed", collapsed);
+        const icon = button.querySelector(".qig-collapsible__icon");
+        if (icon) {
+            icon.classList.toggle("fa-chevron-right", collapsed);
+            icon.classList.toggle("fa-chevron-down", !collapsed);
+        }
+    };
+    apply(button.getAttribute("aria-expanded") === "false");
+    button.onclick = () => {
+        const collapsed = button.getAttribute("aria-expanded") !== "false";
+        setCollapsedSection(sectionId, collapsed);
+        apply(collapsed);
+    };
 }
 
 function getNanobananaAspectRatio(settings = getSettings()) {
@@ -331,6 +404,7 @@ const defaultSettings = {
     nanobananaNbpCustomPrompt: "",
     nanobananaExtraInstructions: "",
     nanobananaRefImages: [],
+    collapsedSections: { ...QIG_DEFAULT_COLLAPSED_SECTIONS },
     // Stability AI
     stabilityKey: "",
     // Replicate
@@ -2068,6 +2142,9 @@ function showStatus(msg) {
     if (!status) {
         status = document.createElement("div");
         status.id = "qig-status";
+        status.setAttribute("role", "status");
+        status.setAttribute("aria-live", "polite");
+        status.setAttribute("aria-atomic", "true");
         document.body.appendChild(status);
         cachedElements["qig-status"] = status;
     }
@@ -2102,10 +2179,12 @@ function setGenerationActiveUI(active, { disableGenerateButton = false } = {}) {
     if (!btn) return;
     if (active) {
         btn.disabled = true;
-        btn.textContent = "Generating...";
+        btn.setAttribute("aria-busy", "true");
+        btn.innerHTML = '<span class="fa-solid fa-spinner fa-spin" aria-hidden="true"></span><span>Generating...</span>';
     } else {
         btn.disabled = false;
-        btn.textContent = "🎨 Generate";
+        btn.removeAttribute("aria-busy");
+        btn.innerHTML = '<span class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></span><span>Generate</span><span class="qig-shortcut-hint">Ctrl+Enter</span>';
     }
 }
 
@@ -10189,8 +10268,9 @@ function updateProviderUI() {
     const section = document.getElementById(`qig-${s.provider}-settings`);
     if (section) section.style.display = "block";
 
-    const showAdvanced = ["novelai", "arliai", "nanogpt", "chutes", "civitai", "local"].includes(s.provider);
-    document.getElementById("qig-advanced-settings").style.display = showAdvanced ? "block" : "none";
+    const advancedSettingsEl = document.getElementById("qig-advanced-settings");
+    const advancedShell = advancedSettingsEl?.closest(".qig-advanced-settings-shell");
+    if (advancedShell) advancedShell.style.display = "";
 
     const isNai = s.provider === "novelai";
     const sizeCustomEl = document.getElementById("qig-size-custom");
@@ -10439,6 +10519,16 @@ function createUI() {
     const s = getSettings();
     if (s.provider === "novelai") normalizeSize(s);
     const esc = (v) => escapeHtml(v == null ? "" : String(v));
+    const collapsed = getCollapsedSections(s);
+    const providerSettingsHidden = collapsed.providerSettings ? "hidden" : "";
+    const providerSettingsExpanded = collapsed.providerSettings ? "false" : "true";
+    const promptAdvancedHidden = collapsed.promptAdvanced ? "hidden" : "";
+    const promptAdvancedExpanded = collapsed.promptAdvanced ? "false" : "true";
+    const injectOptionsCollapsed = collapsed.injectOptions && !s.injectEnabled;
+    const injectOptionsHidden = injectOptionsCollapsed ? "hidden" : "";
+    const injectOptionsExpanded = injectOptionsCollapsed ? "false" : "true";
+    const advancedSettingsHidden = collapsed.advancedSettings ? "hidden" : "";
+    const advancedSettingsExpanded = collapsed.advancedSettings ? "false" : "true";
     const selectedNaiResolution = getNaiResolutionOptionValue(s.width, s.height);
     const samplerOpts = Object.entries(SAMPLER_GROUPS).map(([group, ids]) =>
         `<optgroup label="${group}">${ids.map(x => `<option value="${x}" ${s.sampler === x ? "selected" : ""}>${SAMPLER_DISPLAY_NAMES[x] || x}</option>`).join("")}</optgroup>`
@@ -10455,13 +10545,23 @@ function createUI() {
     const activeBatchLabel = `${activeBatchCount} image${activeBatchCount === 1 ? "" : "s"}`;
 
     const html = `
-    <div id="qig-settings" class="qig-settings">
+    <div id="qig-settings" class="qig-settings" role="region" aria-label="Quick Image Gen settings">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
                 <b>Quick Image Gen</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
+                <nav class="qig-action-bar" aria-label="Quick Image Gen primary actions">
+                    <button id="qig-generate-btn" class="menu_button qig-primary-action" title="Generate image with current settings (Ctrl+Enter)" aria-label="Generate image with current settings">
+                        <span class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></span>
+                        <span>Generate</span>
+                        <span class="qig-shortcut-hint">Ctrl+Enter</span>
+                    </button>
+                    <button id="qig-gallery-settings-btn" class="menu_button qig-action-bar__secondary" title="Browse generated images (Ctrl+Shift+G)" aria-label="Open generated image gallery"><span class="fa-solid fa-images" aria-hidden="true"></span><span>Gallery</span></button>
+                    <button id="qig-prompt-history-btn" class="menu_button qig-action-bar__secondary" title="View prompt history (Ctrl+Shift+H)" aria-label="Open prompt history"><span class="fa-solid fa-clock-rotate-left" aria-hidden="true"></span><span>Prompts</span></button>
+                </nav>
+
                 <div class="qig-menu-hero">
                     <div class="qig-menu-hero__summary">
                         <span class="qig-menu-eyebrow">Ready to generate</span>
@@ -10472,23 +10572,18 @@ function createUI() {
                             <span>${esc(activeBatchLabel)}</span>
                         </div>
                     </div>
-                    <button id="qig-generate-btn" class="menu_button qig-primary-action" title="Generate an image using current settings">
-                        <span class="fa-solid fa-wand-magic-sparkles"></span>
-                        <span>Generate</span>
-                    </button>
+                    <div class="qig-hero-note">Set provider and prompt below. Generate stays available while you scroll.</div>
                 </div>
 
                 <div class="qig-quick-actions" aria-label="Quick Image Gen shortcuts">
-                    <button id="qig-gallery-settings-btn" class="menu_button" title="Browse images generated this session"><span class="fa-solid fa-images"></span><span>Gallery</span></button>
-                    <button id="qig-prompt-history-btn" class="menu_button" title="View and reuse past prompts"><span class="fa-solid fa-clock-rotate-left"></span><span>Prompts</span></button>
                     <button id="qig-save-char-btn" class="menu_button" title="Save current settings as defaults for this character"><span class="fa-solid fa-user-check"></span><span>Save Char</span></button>
                     <button id="qig-logs-btn" class="menu_button" title="View generation logs and errors"><span class="fa-solid fa-list-check"></span><span>Logs</span></button>
                 </div>
 
-                <section class="qig-menu-section qig-menu-section--connection">
+                <section class="qig-menu-section qig-menu-section--connection" aria-labelledby="qig-connection-heading">
                     <div class="qig-section-header">
                         <div>
-                            <span class="qig-section-kicker">Connection</span>
+                            <span id="qig-connection-heading" class="qig-section-kicker">Connection</span>
                             <p>Choose the image backend, load reusable credentials, and set the active style.</p>
                         </div>
                     </div>
@@ -10511,8 +10606,15 @@ function createUI() {
                             </div>
                         </div>
                     </div>
-                    <div class="qig-provider-card">
-                        <div class="qig-card-title">Active Provider Settings</div>
+                    <div class="qig-provider-card qig-collapsible">
+                        <button id="qig-provider-settings-toggle" type="button" class="qig-collapsible__header" aria-expanded="${providerSettingsExpanded}" aria-controls="qig-provider-settings-content">
+                            <span>
+                                <span class="qig-card-title">Active Provider Settings</span>
+                                <small>Credentials, model IDs, and provider-specific options for ${esc(activeProviderName)}.</small>
+                            </span>
+                            <span class="qig-collapsible__icon fa-solid ${collapsed.providerSettings ? "fa-chevron-right" : "fa-chevron-down"}" aria-hidden="true"></span>
+                        </button>
+                        <div id="qig-provider-settings-content" class="qig-collapsible__content" ${providerSettingsHidden}>
                 <div id="qig-pollinations-settings" class="qig-provider-section">
                     <label>Pollinations API Key <small>(optional, required for paid models)</small></label>
                     <input id="qig-pollinations-key" type="password" value="${esc(s.pollinationsKey)}" placeholder="pk_... or sk_...">
@@ -11154,20 +11256,21 @@ function createUI() {
                     </div>
                     </div>
                 </div>
+                        </div>
                     </div>
                 </section>
 
-                <section class="qig-menu-section">
+                <section class="qig-menu-section qig-menu-section--prompt" aria-labelledby="qig-prompt-heading">
                     <div class="qig-section-header">
                         <div>
-                            <span class="qig-section-kicker">Prompt</span>
+                            <span id="qig-prompt-heading" class="qig-section-kicker">Prompt</span>
                             <p>Write the base idea, save repeatable presets, and decide how chat context is converted.</p>
                         </div>
                     </div>
                     <div class="qig-field">
-                        <label>Prompt</label>
-                        <textarea id="qig-prompt" rows="3">${esc(s.prompt)}</textarea>
-                        <small>Used for manual generation, or as scene context when LLM prompt is enabled.</small>
+                        <label for="qig-prompt">Prompt</label>
+                        <textarea id="qig-prompt" rows="4" aria-describedby="qig-prompt-help">${esc(s.prompt)}</textarea>
+                        <small id="qig-prompt-help">Used for manual generation, or as scene context when LLM prompt is enabled.</small>
                     </div>
                     <div class="qig-action-strip">
                         <button id="qig-chatgpt-nbp-setup" class="menu_button qig-inline-action" title="Set QIG for ChatGPT prompt writing and Nano Banana Pro image rendering"><span class="fa-solid fa-wand-magic-sparkles"></span><span>ChatGPT + NBP</span></button>
@@ -11179,6 +11282,14 @@ function createUI() {
                     <div id="qig-presets" class="qig-presets"></div>
                     <small class="qig-muted">Profiles save provider config. Presets save generation and inject settings. Contextual filters stay managed separately.</small>
 
+                    <button id="qig-prompt-advanced-toggle" type="button" class="qig-collapsible__header qig-inline-collapsible" aria-expanded="${promptAdvancedExpanded}" aria-controls="qig-prompt-advanced-content">
+                        <span>
+                            <span class="qig-card-title">Advanced Prompt Options</span>
+                            <small>Negative prompt, quality tags, chat-message selection, and LLM rewrite controls.</small>
+                        </span>
+                        <span class="qig-collapsible__icon fa-solid ${collapsed.promptAdvanced ? "fa-chevron-right" : "fa-chevron-down"}" aria-hidden="true"></span>
+                    </button>
+                    <div id="qig-prompt-advanced-content" class="qig-collapsible__content" ${promptAdvancedHidden}>
                     <div class="qig-control-grid qig-control-grid--stack">
                         <div class="qig-field">
                             <label>Negative Prompt</label>
@@ -11255,12 +11366,13 @@ function createUI() {
                             </div>
                         </div>
                     </div>
+                    </div>
                 </section>
 
-                <section class="qig-menu-section">
+                <section class="qig-menu-section" aria-labelledby="qig-context-heading">
                     <div class="qig-section-header">
                         <div>
-                            <span class="qig-section-kicker">Context</span>
+                            <span id="qig-context-heading" class="qig-section-kicker">Context</span>
                             <p>Apply SillyTavern style data and manage conditional prompt rules.</p>
                         </div>
                     </div>
@@ -11276,10 +11388,10 @@ function createUI() {
                     </div>
                 </section>
 
-                <section class="qig-menu-section">
+                <section class="qig-menu-section" aria-labelledby="qig-automation-heading">
                     <div class="qig-section-header">
                         <div>
-                            <span class="qig-section-kicker">Automation</span>
+                            <span id="qig-automation-heading" class="qig-section-kicker">Automation</span>
                             <p>Control when images generate and how finished images land in chat.</p>
                         </div>
                     </div>
@@ -11296,7 +11408,14 @@ function createUI() {
                         <input id="qig-inject-enabled" type="checkbox" ${s.injectEnabled ? "checked" : ""}>
                         <span>Use AI-written image tags for auto-generation</span>
                     </label>
-                    <div id="qig-inject-options" style="display:${s.injectEnabled ? "block" : "none"};margin-left:16px;">
+                    <button id="qig-inject-options-toggle" type="button" class="qig-collapsible__header qig-inline-collapsible qig-inline-collapsible--nested" aria-expanded="${injectOptionsExpanded}" aria-controls="qig-inject-options">
+                        <span>
+                            <span class="qig-card-title">Inject Configuration</span>
+                            <small>Tag format, extraction regex, insertion mode, and detection test.</small>
+                        </span>
+                        <span class="qig-collapsible__icon fa-solid ${injectOptionsCollapsed ? "fa-chevron-right" : "fa-chevron-down"}" aria-hidden="true"></span>
+                    </button>
+                    <div id="qig-inject-options" class="qig-collapsible__content qig-dependent-panel" ${injectOptionsHidden}>
                         <small style="opacity:0.6;font-size:10px;">Active only when Auto-generate is enabled. QIG injects instructions into chat completions, extracts image tags from AI replies, and turns them into images.</small>
                         <label>Tag name</label>
                         <input id="qig-inject-tag-name" type="text" value="${esc(getInjectTagName(s))}" placeholder="image" style="width:100%;text-transform:lowercase;">
@@ -11362,10 +11481,10 @@ function createUI() {
                 </div>
                 </section>
 
-                <section class="qig-menu-section">
+                <section class="qig-menu-section" aria-labelledby="qig-output-heading">
                     <div class="qig-section-header">
                         <div>
-                            <span class="qig-section-kicker">Output</span>
+                            <span id="qig-output-heading" class="qig-section-kicker">Output</span>
                             <p>Set insertion behavior, saved file handling, image size, and repeat count.</p>
                         </div>
                     </div>
@@ -11438,12 +11557,15 @@ function createUI() {
                     <span>Sequential seeds (seed, seed+1, seed+2...)</span>
                 </label>
                 
-                <div class="inline-drawer" style="margin:4px 0;">
-                    <div class="inline-drawer-toggle inline-drawer-header">
-                        <b style="font-size:12px;">Advanced Settings</b>
-                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                    </div>
-                    <div class="inline-drawer-content" id="qig-advanced-settings">
+                <div class="qig-collapsible qig-advanced-settings-shell">
+                    <button id="qig-advanced-settings-toggle" type="button" class="qig-collapsible__header" aria-expanded="${advancedSettingsExpanded}" aria-controls="qig-advanced-settings">
+                        <span>
+                            <span class="qig-card-title">Advanced Settings</span>
+                            <small>Sampler, steps, CFG scale, and seed controls.</small>
+                        </span>
+                        <span class="qig-collapsible__icon fa-solid ${collapsed.advancedSettings ? "fa-chevron-right" : "fa-chevron-down"}" aria-hidden="true"></span>
+                    </button>
+                    <div class="qig-collapsible__content" id="qig-advanced-settings" ${advancedSettingsHidden}>
                     <label>Steps</label>
                     <small style="opacity:0.6;font-size:10px;">More steps = higher quality but slower (20-30 is typical)</small>
                     <input id="qig-steps" type="number" value="${esc(s.steps)}" min="1" max="150">
@@ -11481,6 +11603,11 @@ function createUI() {
     document.getElementById("qig-save-preset").onclick = savePreset;
     document.getElementById("qig-export-btn").onclick = exportAllSettings;
     document.getElementById("qig-import-btn").onclick = importSettings;
+    setupQigCollapsibleSection("providerSettings", "qig-provider-settings-toggle", "qig-provider-settings-content");
+    setupQigCollapsibleSection("promptAdvanced", "qig-prompt-advanced-toggle", "qig-prompt-advanced-content");
+    setupQigCollapsibleSection("injectOptions", "qig-inject-options-toggle", "qig-inject-options");
+    setupQigCollapsibleSection("advancedSettings", "qig-advanced-settings-toggle", "qig-advanced-settings");
+    bindQigKeyboardShortcuts();
     renderPresets();
     renderProfileSelect();
     renderComfyWorkflowPresets();
@@ -12162,7 +12289,21 @@ function createUI() {
     // Inject mode bindings
     document.getElementById("qig-inject-enabled").onchange = (e) => {
         getSettings().injectEnabled = e.target.checked;
-        document.getElementById("qig-inject-options").style.display = e.target.checked ? "block" : "none";
+        const toggle = document.getElementById("qig-inject-options-toggle");
+        const content = document.getElementById("qig-inject-options");
+        if (e.target.checked) {
+            setCollapsedSection("injectOptions", false);
+            if (toggle && content) {
+                toggle.setAttribute("aria-expanded", "true");
+                content.hidden = false;
+            }
+        } else {
+            setCollapsedSection("injectOptions", true);
+            if (toggle && content) {
+                toggle.setAttribute("aria-expanded", "false");
+                content.hidden = true;
+            }
+        }
         saveSettingsDebounced();
     };
     document.getElementById("qig-inject-tag-name").onchange = (e) => {

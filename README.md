@@ -7,7 +7,11 @@ Prompt Replacement Maps and Prompt Templates have been removed. Old prompt repla
 
 **Install:** Extensions -> Install from URL -> `https://github.com/platberlitz/sillytavern-image-gen`
 
-## What's New in v2.0.5
+## What's New in v2.0.6
+- Added Nano Banana Pro / Gemini 3 Pro Image workflow controls, including director presets, optional negative guidance, and a one-click ChatGPT + Nano Banana Pro setup.
+- Polished the Quick Image Gen settings UI with collapsible sections, a sticky action bar, clearer provider cards, and improved mobile layout.
+
+## Recent v2.0.5 Fixes
 - Added GPT Image as its own provider, defaulting to `gpt-image-2`.
 - GPT Image supports optional reverse proxy URL/key overrides like NovelAI, plus quality, output format, background, and moderation controls.
 

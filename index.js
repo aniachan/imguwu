@@ -5458,7 +5458,7 @@ async function genCivitAI(prompt, negative, s, signal) {
     };
     if (additionalNetworks) input.additionalNetworks = additionalNetworks;
 
-    const res = await fetch("https://civitai.com/api/v1/consumer/jobs", {
+    const res = await corsFetch("https://civitai.com/api/v1/consumer/jobs", {
         method: "POST",
         headers: {
             "Authorization": `Bearer ${s.civitaiKey}`,
@@ -5481,7 +5481,7 @@ async function genCivitAI(prompt, negative, s, signal) {
     for (let i = 0; i < 60; i++) {
         if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
         await new Promise(r => setTimeout(r, 2000));
-        const statusRes = await fetch(`https://civitai.com/api/v1/consumer/jobs?token=${jobToken}`, {
+        const statusRes = await corsFetch(`https://civitai.com/api/v1/consumer/jobs?token=${jobToken}`, {
             headers: { "Authorization": `Bearer ${s.civitaiKey}` },
             signal
         });
@@ -7571,7 +7571,7 @@ async function genReplicate(prompt, negative, s, signal) {
     const version = s.replicateModel || "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b";
 
     // Create prediction
-    const res = await fetch("https://api.replicate.com/v1/predictions", {
+    const res = await corsFetch("https://api.replicate.com/v1/predictions", {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -7608,7 +7608,7 @@ async function genReplicate(prompt, negative, s, signal) {
     for (let i = 0; i < 60; i++) {
         if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
         await new Promise(r => setTimeout(r, 2000));
-        const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${pred.id}`, {
+        const statusRes = await corsFetch(`https://api.replicate.com/v1/predictions/${pred.id}`, {
             headers: { "Authorization": `Token ${s.replicateKey}` },
             signal
         });

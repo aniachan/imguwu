@@ -379,8 +379,12 @@
 }
 
 #qig-workspace-btn.qig-chat-logo-button {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    padding: 3px;
     border-radius: 7px;
-    background: url("./assets/imguwu-logo.png") center / 22px 22px no-repeat;
+    background: url("./assets/imguwu-logo.png") center / 30px 30px no-repeat;
 }
 
 .qig-menu-section--connection {

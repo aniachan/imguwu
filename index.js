@@ -8,7 +8,7 @@ function getRandomArtist(useTagFormat = false) {
     return artists[Math.floor(Math.random() * artists.length)];
 }
 
-const extensionName = "quick-image-gen";
+const extensionName = "imguwu";
 let extension_settings, getContext, saveSettingsDebounced, generateQuietPrompt, generateRaw, generateRawData, createRawPrompt, secret_state, rotateSecret, getRequestHeaders;
 let createGenerationParameters, getChatCompletionModel;
 let saveBase64AsFile, getSanitizedFilename, humanizedDateTime;
@@ -32,6 +32,62 @@ const LEGACY_INJECT_PROMPT_DEFAULT = 'When describing a scene visually, include 
 const LEGACY_INJECT_REGEX_DEFAULT = '<pic\\s+prompt="([^"]+)"\\s*/?>';
 const DUAL_INJECT_PROMPT_DEFAULT = 'When describing a scene visually, include an image tag using one of these formats:\n- Simple: <image>detailed visual description</image>\n- Alternative: <pic prompt="detailed visual description">\nUse this for important visual moments. The description should detail character appearances, poses, expressions, clothing, and setting.';
 const DUAL_INJECT_REGEX_DEFAULT = '<pic\\s+prompt="([^"]+)"\\s*/?>|<image>([\\s\\S]*?)</image>';
+const FLUX2_KLEIN_CHARACTER_WORKFLOW = JSON.stringify({
+    "1": { "inputs": { "unet_name": "%model%", "weight_dtype": "default" }, "class_type": "UNETLoader", "_meta": { "title": "Flux2 Klein Edit Model" } },
+    "2": { "inputs": { "model": ["1", 0] }, "class_type": "FluxKVCache", "_meta": { "title": "Flux KV Cache" } },
+    "3": { "inputs": { "clip_name": "qwen_3_8b_fp8mixed.safetensors", "type": "flux2", "device": "default" }, "class_type": "CLIPLoader", "_meta": { "title": "Flux2 Text Encoder" } },
+    "4": {
+        "inputs": {
+            "text": "Use the supplied reference image as the visual identity reference for the same character. Preserve the character's face, hair, eyes, distinctive accessories, and overall visual identity unless the scene request explicitly changes them. Create a coherent new image for this scene request: %prompt%",
+            "clip": ["3", 0]
+        },
+        "class_type": "CLIPTextEncode",
+        "_meta": { "title": "Image Prompt" }
+    },
+    "5": { "inputs": { "guidance": 3.5, "conditioning": ["4", 0] }, "class_type": "FluxGuidance", "_meta": { "title": "Flux Guidance" } },
+    "6": { "inputs": { "conditioning": ["4", 0] }, "class_type": "ConditioningZeroOut", "_meta": { "title": "Zero Negative Conditioning" } },
+    "7": { "inputs": { "vae_name": "flux2-vae.safetensors" }, "class_type": "VAELoader", "_meta": { "title": "Flux2 VAE" } },
+    "8": { "inputs": { "image": "%reference_image%" }, "class_type": "LoadImage", "_meta": { "title": "Character Reference Image" } },
+    "9": { "inputs": { "upscale_method": "lanczos", "megapixels": 0.5, "resolution_steps": 1, "image": ["8", 0] }, "class_type": "ImageScaleToTotalPixels", "_meta": { "title": "Scale Reference" } },
+    "10": { "inputs": { "pixels": ["9", 0], "vae": ["7", 0] }, "class_type": "VAEEncode", "_meta": { "title": "Encode Reference" } },
+    "11": { "inputs": { "conditioning": ["5", 0], "latent": ["10", 0] }, "class_type": "ReferenceLatent", "_meta": { "title": "Positive Reference" } },
+    "12": { "inputs": { "conditioning": ["6", 0], "latent": ["10", 0] }, "class_type": "ReferenceLatent", "_meta": { "title": "Negative Reference" } },
+    "13": { "inputs": { "width": "%width%", "height": "%height%", "batch_size": 1 }, "class_type": "EmptyFlux2LatentImage", "_meta": { "title": "Output Size" } },
+    "14": { "inputs": { "steps": "%steps%", "width": "%width%", "height": "%height%" }, "class_type": "Flux2Scheduler", "_meta": { "title": "Flux2 Scheduler" } },
+    "15": { "inputs": { "sampler_name": "euler" }, "class_type": "KSamplerSelect", "_meta": { "title": "Euler Sampler" } },
+    "16": { "inputs": { "noise_seed": "%seed%" }, "class_type": "RandomNoise", "_meta": { "title": "Seed" } },
+    "17": { "inputs": { "cfg": 1, "model": ["2", 0], "positive": ["11", 0], "negative": ["12", 0] }, "class_type": "CFGGuider", "_meta": { "title": "CFG Guider" } },
+    "18": { "inputs": { "noise": ["16", 0], "guider": ["17", 0], "sampler": ["15", 0], "sigmas": ["14", 0], "latent_image": ["13", 0] }, "class_type": "SamplerCustomAdvanced", "_meta": { "title": "Sample" } },
+    "19": { "inputs": { "samples": ["18", 0], "vae": ["7", 0] }, "class_type": "VAEDecode", "_meta": { "title": "Decode" } },
+    "20": { "inputs": { "filename_prefix": "qig_flux2_character", "images": ["19", 0] }, "class_type": "SaveImage", "_meta": { "title": "Save Image" } }
+}, null, 2);
+const ZIMAGE_TURBO_WORKFLOW = JSON.stringify({
+    "1": { "inputs": { "unet_name": "%model%", "weight_dtype": "default" }, "class_type": "UNETLoader", "_meta": { "title": "Z-Image Turbo Model" } },
+    "2": { "inputs": { "shift": 3, "model": ["1", 0] }, "class_type": "ModelSamplingAuraFlow", "_meta": { "title": "Z-Image Sampling" } },
+    "3": { "inputs": { "clip_name": "Qwen3-4b-Z-Image-Turbo-AbliteratedV1.safetensors", "type": "lumina2", "device": "default" }, "class_type": "CLIPLoader", "_meta": { "title": "Z-Image Text Encoder" } },
+    "4": { "inputs": { "vae_name": "ae.safetensors" }, "class_type": "VAELoader", "_meta": { "title": "Z-Image VAE" } },
+    "5": { "inputs": { "text": "%prompt%", "clip": ["3", 0] }, "class_type": "CLIPTextEncode", "_meta": { "title": "Image Prompt" } },
+    "6": { "inputs": { "conditioning": ["5", 0] }, "class_type": "ConditioningZeroOut", "_meta": { "title": "Zero Negative Conditioning" } },
+    "7": { "inputs": { "width": "%width%", "height": "%height%", "batch_size": 1 }, "class_type": "EmptySD3LatentImage", "_meta": { "title": "Output Size" } },
+    "8": {
+        "inputs": {
+            "seed": "%seed%",
+            "steps": "%steps%",
+            "cfg": "%cfg%",
+            "sampler_name": "res_multistep",
+            "scheduler": "simple",
+            "denoise": 1,
+            "model": ["2", 0],
+            "positive": ["5", 0],
+            "negative": ["6", 0],
+            "latent_image": ["7", 0]
+        },
+        "class_type": "KSampler",
+        "_meta": { "title": "Sample" }
+    },
+    "9": { "inputs": { "samples": ["8", 0], "vae": ["4", 0] }, "class_type": "VAEDecode", "_meta": { "title": "Decode" } },
+    "10": { "inputs": { "filename_prefix": "imguwu_zimage", "images": ["9", 0] }, "class_type": "SaveImage", "_meta": { "title": "Save Image" } }
+}, null, 2);
 
 function escapeRegex(text) {
     return String(text ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -321,15 +377,15 @@ function applyChatGptNbpWorkflowPreset({ persist = true, notify = true } = {}) {
 }
 
 const defaultSettings = {
-    provider: "pollinations",
+    provider: "local",
     style: "none",
     prompt: "{{char}} in the current scene",
     negativePrompt: "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, deformed, ugly, duplicate, morbid, mutilated, out of frame, mutation, disfigured",
     qualityTags: "masterpiece, best quality, highly detailed, sharp focus, 8k",
     appendQuality: true,
     useLastMessage: true,
-    useLLMPrompt: false,
-    llmPromptStyle: "tags",
+    useLLMPrompt: true,
+    llmPromptStyle: "natural",
     llmCustomInstruction: "",
     llmEditPrompt: false,
     llmAddQuality: false,
@@ -337,11 +393,11 @@ const defaultSettings = {
     llmAddArtist: false,
     llmPrefill: "",
     messageRange: "-1",
-    width: 512,
-    height: 512,
-    steps: 25,
-    cfgScale: 7,
-    sampler: "euler_a",
+    width: 832,
+    height: 1216,
+    steps: 6,
+    cfgScale: 1,
+    sampler: "euler",
     seed: -1,
     autoGenerate: false,
     autoInsert: false,
@@ -440,10 +496,11 @@ const defaultSettings = {
     pollinationsKey: "",
     pollinationsModel: "",
     // Local (A1111/ComfyUI)
-    localUrl: "http://127.0.0.1:7860",
-    localType: "a1111",
-    localModel: "model.safetensors",
+    localUrl: "http://127.0.0.1:8188",
+    localType: "comfyui",
+    localModel: "flux-2-klein\\moodyDesireMix_v20EDITHEADSWAP.safetensors",
     localRefImage: "",
+    visualIdentity: "",
     localDenoise: 0.75,
     // A1111 specific
     a1111Model: "",
@@ -508,6 +565,8 @@ const defaultSettings = {
     a1111SaveToWebUI: true,
     // ComfyUI specific
     comfyWorkflow: "",
+    comfyBuiltinWorkflow: "auto",
+    comfyZImageModel: "z-image-turbo\\moodyProMix_zitV12DPO.safetensors",
     comfyClipSkip: 1,
     comfyDenoise: 1.0,
     comfyScheduler: "normal",
@@ -1157,39 +1216,11 @@ function customInstructionHasMacro(template, macroName) {
 }
 
 const PROVIDER_KEYS = {
-    pollinations: ["pollinationsKey", "pollinationsModel"],
-    novelai: ["naiKey", "naiModel", "naiProxyUrl", "naiProxyKey"],
-    gptimage: ["gptImageKey", "gptImageModel", "gptImageProxyUrl", "gptImageProxyKey", "gptImageQuality", "gptImageFormat", "gptImageBackground", "gptImageModeration"],
-    arliai: ["arliKey", "arliModel"],
-    nanogpt: ["nanogptKey", "nanogptModel", "nanogptRefImages", "nanogptStrength"],
-    chutes: ["chutesKey", "chutesModel"],
-    civitai: ["civitaiKey", "civitaiModel", "civitaiScheduler", "civitaiLoras"],
-    nanobanana: ["nanobananaKey", "nanobananaModel", "nanobananaExtraInstructions", "nanobananaRefImages"],
-    stability: ["stabilityKey"],
-    replicate: ["replicateKey", "replicateModel"],
-    fal: ["falKey", "falModel"],
-    together: ["togetherKey", "togetherModel"],
-    zai: ["zaiKey", "zaiModel", "zaiQuality"],
-    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Scheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111AdetailerDenoise", "a1111AdetailerConfidence", "a1111AdetailerMaskBlur", "a1111AdetailerDilateErode", "a1111AdetailerInpaintOnlyMasked", "a1111AdetailerInpaintPadding", "a1111Adetailer2", "a1111Adetailer2Model", "a1111Adetailer2Prompt", "a1111Adetailer2Negative", "a1111Adetailer2Denoise", "a1111Adetailer2Confidence", "a1111Adetailer2MaskBlur", "a1111Adetailer2DilateErode", "a1111Adetailer2InpaintOnlyMasked", "a1111Adetailer2InpaintPadding", "a1111Loras", "a1111Vae", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111HiresSampler", "a1111HiresScheduler", "a1111HiresPrompt", "a1111HiresNegative", "a1111HiresResizeX", "a1111HiresResizeY", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "a1111ControlNet", "a1111ControlNetModel", "a1111ControlNetModule", "a1111ControlNetWeight", "a1111ControlNetResizeMode", "a1111ControlNetControlMode", "a1111ControlNetPixelPerfect", "a1111ControlNetGuidanceStart", "a1111ControlNetGuidanceEnd", "a1111ControlNetImage", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyScheduler", "comfyTimeout", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
-    proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages", "proxyEndpointMode", "proxyPayloadMode", "proxyRefImageMode", "proxySse", "proxyTimeout", "proxyComfyMode", "proxyComfyTimeout", "proxyComfyNodeId", "proxyComfyWorkflow", "proxyChatImageMode", "proxyChatImageAllowImagesEndpoint", "proxyChatImageSystemPrompt", "proxyChatImageIncludePersonality", "proxyChatImageMaxTokens"]
+    local: ["localUrl", "localType", "localModel", "localRefImage", "comfyWorkflow", "comfyBuiltinWorkflow", "comfyZImageModel", "comfyClipSkip", "comfyDenoise", "comfyScheduler", "comfyTimeout", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"]
 };
 
 const PROVIDERS = {
-    pollinations: { name: "Pollinations (Free + Paid)", needsKey: false },
-    novelai: { name: "NovelAI", needsKey: true },
-    gptimage: { name: "GPT Image (OpenAI)", needsKey: true },
-    arliai: { name: "ArliAI", needsKey: true },
-    nanogpt: { name: "NanoGPT", needsKey: true },
-    chutes: { name: "Chutes", needsKey: true },
-    civitai: { name: "CivitAI", needsKey: true },
-    nanobanana: { name: "Nanobanana (Gemini)", needsKey: true },
-    stability: { name: "Stability AI", needsKey: true },
-    replicate: { name: "Replicate", needsKey: true },
-    fal: { name: "Fal.ai", needsKey: true },
-    together: { name: "Together AI", needsKey: true },
-    zai: { name: "Z.AI", needsKey: true },
-    local: { name: "Local (A1111/ComfyUI)", needsKey: false },
-    proxy: { name: "Reverse Proxy (OpenAI-compatible)", needsKey: false }
+    local: { name: "ComfyUI", needsKey: false }
 };
 
 const NAI_RESOLUTIONS = [
@@ -2602,6 +2633,8 @@ async function loadSettings() {
     const saved = extension_settings[extensionName];
     extension_settings[extensionName] = { ...defaultSettings, ...saved };
     const s = extension_settings[extensionName];
+    s.provider = "local";
+    s.localType = "comfyui";
     s.paletteMode = normalizePaletteMode(s.paletteMode);
     const savedTagName = getInjectTagName(saved);
     s.injectTagName = savedTagName;
@@ -3292,6 +3325,22 @@ function getCharacterEntryById(charId, ctx = getContext()) {
     ) || null;
 }
 
+function getCharacterVisualIdentity(charId) {
+    if (charId == null) return "";
+    if (String(charId) === String(getCurrentCharId()) && getSettings()?.visualIdentity) {
+        return truncateForContext(getSettings().visualIdentity, 1000);
+    }
+    return truncateForContext(charSettings?.[String(charId)]?.visualIdentity, 1000);
+}
+
+function prependVisualIdentity(visualIdentity, cardDescription) {
+    const visual = String(visualIdentity || "").trim();
+    const card = String(cardDescription || "").trim();
+    if (!visual) return card;
+    if (!card) return `Visual identity override: ${visual}`;
+    return `Visual identity override: ${visual}\nCard description: ${card}`;
+}
+
 function getCurrentCharacterEntry(ctx = getContext()) {
     if (ctx?.characterId != null) {
         const match = getCharacterEntryById(ctx.characterId, ctx);
@@ -3476,7 +3525,7 @@ function resolveChatProfileContext(ctx = getContext()) {
     for (const entry of activeEntries) {
         const data = entry.data || {};
         charCards.push(data);
-        const desc = truncateForContext(data.description, 1500);
+        const desc = prependVisualIdentity(getCharacterVisualIdentity(entry.id), truncateForContext(data.description, 1500));
         if (desc) charDescLines.push(`${entry.name}: ${desc}`);
 
         const scenario = truncateForContext(data.scenario, 600);
@@ -3752,7 +3801,7 @@ function resolveLLMPromptProfileContext(ctx = getContext(), sceneText = "") {
     const currentData = currentEntry?.data || {};
     const userName = String(promptAwareProfile.userName || "").trim() || "user";
     const currentCardName = normalizeScopeLabel(currentEntry?.name || currentEntry?.avatar || ctx?.name2 || "");
-    const directCardDesc = truncateForContext(currentData.description, 1500);
+    const directCardDesc = prependVisualIdentity(getCharacterVisualIdentity(currentEntry?.id), truncateForContext(currentData.description, 1500));
     const directCardScenario = truncateForContext(currentData.scenario, 600);
     const directCardTags = getCharacterCardTags(currentData).join(", ");
     const discoveredNames = uniqueStringList([
@@ -5922,13 +5971,25 @@ async function genLocal(prompt, negative, s, signal) {
             throw new Error(`ComfyUI timed out after ${comfyTimeoutSeconds}s`);
         }
 
-        // Check for custom workflow JSON
-        if (s.comfyWorkflow && s.comfyWorkflow.trim()) {
+        const builtinWorkflowMode = String(s.comfyBuiltinWorkflow || "auto").trim();
+        const shouldUseZImageBuiltin = builtinWorkflowMode === "zimage" || (builtinWorkflowMode === "auto" && !s.localRefImage);
+        if (!s.comfyWorkflow?.trim() && builtinWorkflowMode === "flux2" && !s.localRefImage) {
+            throw new Error("Flux.2 Klein reference workflow needs a character reference image. Upload one in Character Identity or switch Built-in Workflow to Auto/Z-Image.");
+        }
+        const builtinWorkflowJson = shouldUseZImageBuiltin ? ZIMAGE_TURBO_WORKFLOW : FLUX2_KLEIN_CHARACTER_WORKFLOW;
+        const customWorkflowJson = s.comfyWorkflow && s.comfyWorkflow.trim() ? s.comfyWorkflow : "";
+        const workflowJson = customWorkflowJson || builtinWorkflowJson;
+        const workflowModel = !customWorkflowJson && shouldUseZImageBuiltin
+            ? (s.comfyZImageModel || "z-image-turbo\\moodyProMix_zitV12DPO.safetensors")
+            : (s.localModel || "model.safetensors");
+
+        // Built-in graphs stay clean in UI; Custom Workflow JSON remains the escape hatch.
+        if (workflowJson) {
             let customWorkflow = null;
             try {
-                customWorkflow = JSON.parse(s.comfyWorkflow);
+                customWorkflow = JSON.parse(workflowJson);
             } catch (e) {
-                log(`ComfyUI: Invalid workflow JSON: ${e.message}, using default`);
+                log(`ComfyUI: Invalid ${customWorkflowJson ? "custom" : "built-in"} workflow JSON: ${e.message}, using default`);
             }
 
             if (customWorkflow && typeof customWorkflow === "object" && !Array.isArray(customWorkflow)) {
@@ -5972,7 +6033,7 @@ async function genLocal(prompt, negative, s, signal) {
                     '%clip_skip%': String(clipSkip),
                     '%sampler%': samplerName,
                     '%scheduler%': schedulerName,
-                    '%model%': s.localModel || 'model.safetensors',
+                    '%model%': workflowModel,
                     '%reference_image%': uploadedRefName
                 };
                 const typedReplacements = {
@@ -5987,7 +6048,7 @@ async function genLocal(prompt, negative, s, signal) {
                     '%clip_skip%': clipSkip,
                     '%sampler%': samplerName,
                     '%scheduler%': schedulerName,
-                    '%model%': s.localModel || 'model.safetensors',
+                    '%model%': workflowModel,
                     '%reference_image%': uploadedRefName
                 };
 
@@ -6008,7 +6069,7 @@ async function genLocal(prompt, negative, s, signal) {
                 };
                 replaceInObj(customWorkflow);
 
-                log(`ComfyUI: Using custom workflow with ${Object.keys(customWorkflow).length} nodes`);
+                log(`ComfyUI: Using ${customWorkflowJson ? "custom" : shouldUseZImageBuiltin ? "built-in Z-Image Turbo" : "built-in Flux.2 Klein reference"} workflow with ${Object.keys(customWorkflow).length} nodes`);
 
                 const res = await corsFetch(`${baseUrl}/prompt`, {
                     method: "POST",
@@ -8006,22 +8067,8 @@ async function genZai(prompt, negative, s, signal) {
 }
 
 const providerGenerators = {
-    pollinations: genPollinations,
-    novelai: genNovelAI,
-    gptimage: genGptImage,
-    arliai: genArliAI,
-    nanogpt: genNanoGPT,
-    chutes: genChutes,
-    civitai: genCivitAI,
-    nanobanana: genNanobanana,
-    stability: genStability,
-    replicate: genReplicate,
-    fal: genFal,
-    together: genTogether,
-    zai: genZai,
     local: genLocal,
-    comfyui: genLocal,
-    proxy: genProxy
+    comfyui: genLocal
 };
 
 async function generateForProvider(prompt, negative, settings, signal, options = {}) {
@@ -9466,6 +9513,7 @@ let charSettingsBaseState = null;
 let charSettingsBaseCharId = null;
 
 function getCurrentRefImages(s) {
+    if (s.provider === "local") return s.localRefImage ? [s.localRefImage] : [];
     if (s.provider === "proxy") return s.proxyRefImages || [];
     if (s.provider === "nanobanana") return s.nanobananaRefImages || [];
     if (s.provider === "nanogpt") return s.nanogptRefImages || [];
@@ -9479,6 +9527,8 @@ function cloneCharScopedState(s = getSettings()) {
         style: s.style,
         width: s.width,
         height: s.height,
+        visualIdentity: s.visualIdentity || "",
+        localRefImage: s.localRefImage || "",
         proxyRefImages: [...(s.proxyRefImages || [])],
         nanobananaRefImages: [...(s.nanobananaRefImages || [])],
         nanogptRefImages: [...(s.nanogptRefImages || [])],
@@ -9503,6 +9553,8 @@ function applyCharScopedState(state, s = getSettings()) {
     s.style = state.style ?? defaultSettings.style;
     s.width = state.width ?? defaultSettings.width;
     s.height = state.height ?? defaultSettings.height;
+    s.visualIdentity = state.visualIdentity ?? "";
+    s.localRefImage = state.localRefImage ?? "";
     s.proxyRefImages = [...(state.proxyRefImages || [])];
     s.nanobananaRefImages = [...(state.nanobananaRefImages || [])];
     s.nanogptRefImages = [...(state.nanogptRefImages || [])];
@@ -9511,6 +9563,7 @@ function applyCharScopedState(state, s = getSettings()) {
     const styleEl = document.getElementById("qig-style");
     const widthEl = document.getElementById("qig-width");
     const heightEl = document.getElementById("qig-height");
+    const visualIdentityEl = document.getElementById("qig-visual-identity");
 
     // Only update textarea value if we applied character-scoped prompt
     if (promptEl && !hasManualPromptEdit) {
@@ -9521,12 +9574,14 @@ function applyCharScopedState(state, s = getSettings()) {
     if (styleEl) styleEl.value = s.style ?? defaultSettings.style;
     if (widthEl) widthEl.value = s.width ?? defaultSettings.width;
     if (heightEl) heightEl.value = s.height ?? defaultSettings.height;
+    if (visualIdentityEl) visualIdentityEl.value = s.visualIdentity ?? "";
 
     if (s.provider === "novelai") {
         normalizeSize(s);
         syncNaiResolutionSelect();
     }
     syncSizeInputs(s.width, s.height);
+    syncLocalRefImageUI(s);
     renderRefImages();
     renderNanobananaRefImages();
     renderNanogptRefImages();
@@ -9775,7 +9830,8 @@ function saveCharSettings() {
         negativePrompt: s.negativePrompt,
         style: s.style,
         width: s.width,
-        height: s.height
+        height: s.height,
+        visualIdentity: s.visualIdentity || ""
     };
     const savedCharSettings = safeSetStorage("qig_char_settings", JSON.stringify(charSettings), "Failed to save character settings. Browser storage may be full.");
     const refs = getCurrentRefImages(s);
@@ -9790,6 +9846,134 @@ function saveCharSettings() {
     backupToSettings("qig_char_ref_images", charRefImages);
     showStatus("💾 Saved settings for this character");
     setTimeout(hideStatus, 2000);
+}
+
+function getCharacterCardImageUrl(entry = getCurrentCharacterEntry()) {
+    const avatar = String(entry?.avatar || entry?.data?.avatar || "").trim();
+    return avatar ? `/characters/${encodeURIComponent(avatar)}` : "";
+}
+
+async function imageUrlToDataUrl(url) {
+    const response = await fetch(url, {
+        method: "GET",
+        headers: typeof getRequestHeaders === "function" ? getRequestHeaders() : undefined,
+    });
+    if (!response.ok) {
+        throw new Error(`Could not read card image: ${response.status} ${response.statusText}`);
+    }
+
+    const blob = await response.blob();
+    if (!String(blob.type || "").startsWith("image/")) {
+        throw new Error("Current card image did not return an image file");
+    }
+
+    return await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(reader.error || new Error("Could not convert card image"));
+        reader.readAsDataURL(blob);
+    });
+}
+
+async function useCurrentCardAsReferenceImage() {
+    const charId = getCurrentCharId();
+    const entry = getCurrentCharacterEntry();
+    const cardImageUrl = getCharacterCardImageUrl(entry);
+    if (charId == null || !cardImageUrl) {
+        toastr.warning("Open a character chat with a card image first");
+        return;
+    }
+
+    const button = document.getElementById("qig-local-ref-card-btn");
+    if (button) button.disabled = true;
+    showStatus("Loading character card image...");
+    try {
+        const s = getSettings();
+        s.localRefImage = await imageUrlToDataUrl(cardImageUrl);
+        syncLocalRefImageUI(s);
+        saveSettingsDebounced();
+        saveCharSettings();
+        showStatus("Saved card image as this character's reference");
+        setTimeout(hideStatus, 2000);
+    } catch (e) {
+        log(`Card reference image load failed: ${e.message}`);
+        toastr.error("Could not use card image as reference: " + e.message);
+        hideStatus();
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
+async function generateCharacterVisualIdentity() {
+    const charId = getCurrentCharId();
+    const entry = getCurrentCharacterEntry();
+    if (charId == null || !entry?.data) {
+        toastr.warning("Open a character chat before generating a visual identity");
+        return;
+    }
+
+    const data = entry.data;
+    const cardContext = [
+        `Name: ${entry.name || data.name || "character"}`,
+        data.description ? `Description:\n${truncateForContext(data.description, 3000)}` : "",
+        data.creator_notes || data.creatorcomment ? `Creator notes:\n${truncateForContext(data.creator_notes || data.creatorcomment, 1200)}` : "",
+        getCharacterCardTags(data).length ? `Tags: ${getCharacterCardTags(data).join(", ")}` : "",
+    ].filter(Boolean).join("\n\n");
+    if (!cardContext) {
+        toastr.warning("This character card has no text to extract appearance from");
+        return;
+    }
+
+    showStatus("Extracting reusable visual identity...");
+    const instruction = `[CHARACTER VISUAL IDENTITY EXTRACTION]
+Extract a reusable image-generation visual identity from the SillyTavern character card below.
+
+Return ONLY a concise natural-language appearance description. No heading, no markdown, no commentary.
+
+Include:
+- face, hair, eyes, skin or species/body traits when present
+- distinctive accessories, markings, horns, ears, tail, scars, makeup, or silhouette anchors
+- iconic clothing only when the card clearly treats it as part of the character identity
+- one short note when the card is too vague or contradictory
+
+Exclude:
+- personality, backstory, behavior, powers, relationships, scenario, dialogue style, roleplay instructions
+- camera framing, quality tags, artist/style boilerplate, scene details
+- details that are not supported by the card
+
+Write it so a reference-image edit model can reuse it across new scenes.
+
+Character card:
+${cardContext}`;
+
+    try {
+        const timestamp = Date.now();
+        const response = await callInternalStandaloneLLM(`${instruction}\n\n[${timestamp}]`, {
+            quietName: `QIGVisualIdentity_${timestamp}`,
+            label: "character visual identity extraction",
+        });
+        const identity = String(response || "")
+            .replace(/\[\d+\]\s*/g, "")
+            .replace(/^["'`]+|["'`]+$/g, "")
+            .trim();
+        if (!identity) {
+            toastr.warning("The visual identity extractor returned no text");
+            hideStatus();
+            return;
+        }
+
+        const s = getSettings();
+        s.visualIdentity = identity;
+        const el = document.getElementById("qig-visual-identity");
+        if (el) el.value = identity;
+        saveCharSettings();
+        showStatus("Saved visual identity for this character");
+        setTimeout(hideStatus, 2000);
+    } catch (e) {
+        log(`Visual identity extraction failed: ${e.message}`);
+        toastr.error("Visual identity extraction failed: " + e.message);
+        hideStatus();
+    }
 }
 
 function loadCharSettings() {
@@ -9846,6 +10030,9 @@ function loadCharSettings() {
         s.height = cs.height ?? defaultSettings.height;
         document.getElementById("qig-height").value = s.height;
     }
+    s.visualIdentity = cs.visualIdentity ?? "";
+    const visualIdentityEl = document.getElementById("qig-visual-identity");
+    if (visualIdentityEl) visualIdentityEl.value = s.visualIdentity;
     if (s.provider === "novelai") {
         normalizeSize(s);
         syncNaiResolutionSelect();
@@ -9855,8 +10042,11 @@ function loadCharSettings() {
     s.proxyRefImages = [];
     s.nanobananaRefImages = [];
     s.nanogptRefImages = [];
+    s.localRefImage = "";
     if (hasRefs) {
-        if (s.provider === "proxy") {
+        if (s.provider === "local") {
+            s.localRefImage = refs[0] || "";
+        } else if (s.provider === "proxy") {
             s.proxyRefImages = [...refs];
         } else if (s.provider === "nanobanana") {
             s.nanobananaRefImages = [...refs];
@@ -9867,6 +10057,7 @@ function loadCharSettings() {
     renderRefImages();
     renderNanobananaRefImages();
     renderNanogptRefImages();
+    syncLocalRefImageUI(s);
     saveSettingsDebounced();
     renderContextualFilters();
     return true;
@@ -9939,11 +10130,13 @@ function renderProfileSelect(selectedName = "") {
     if (delBtn) delBtn.onclick = () => { const dd = document.getElementById("qig-profile-dropdown"); if (dd?.value) deleteConnectionProfile(dd.value); };
 }
 
-const COMFY_WORKFLOW_KEYS = ["localModel", "comfyDenoise", "comfyClipSkip", "comfyScheduler", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfyWorkflow", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"];
+const COMFY_WORKFLOW_KEYS = ["localModel", "comfyZImageModel", "comfyBuiltinWorkflow", "comfyDenoise", "comfyClipSkip", "comfyScheduler", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfyWorkflow", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"];
 
 function getComfyWorkflowSnapshot(s = getSettings()) {
     return {
         localModel: s.localModel || "",
+        comfyZImageModel: s.comfyZImageModel || "z-image-turbo\\moodyProMix_zitV12DPO.safetensors",
+        comfyBuiltinWorkflow: s.comfyBuiltinWorkflow || "auto",
         comfyDenoise: s.comfyDenoise ?? 1.0,
         comfyClipSkip: s.comfyClipSkip ?? 1,
         comfyScheduler: s.comfyScheduler || "normal",
@@ -10069,6 +10262,57 @@ function deleteSelectedComfyWorkflowPreset() {
     if (!saveComfyWorkflowStore()) return;
     renderComfyWorkflowPresets("");
     showStatus(`🗑️ Deleted workflow preset: ${preset.name}`);
+    setTimeout(hideStatus, 2000);
+}
+
+function applyFlux2KleinCharacterWorkflow() {
+    const s = getSettings();
+    Object.assign(s, {
+        provider: "local",
+        localType: "comfyui",
+        localModel: "flux-2-klein\\moodyDesireMix_v20EDITHEADSWAP.safetensors",
+        width: 832,
+        height: 1216,
+        steps: 6,
+        cfgScale: 1,
+        sampler: "euler",
+        comfyWorkflow: "",
+        comfyBuiltinWorkflow: "flux2",
+        comfySkipNegativePrompt: false,
+        comfyDenoise: 1,
+        useLastMessage: true,
+        useLLMPrompt: true,
+        llmPromptStyle: "natural",
+        style: "none",
+    });
+    saveSettingsDebounced();
+    createUI();
+    loadCharSettings();
+    showStatus("Loaded Flux.2 Klein character reference workflow");
+    setTimeout(hideStatus, 2000);
+}
+
+function applyZImageTurboWorkflow() {
+    const s = getSettings();
+    Object.assign(s, {
+        provider: "local",
+        localType: "comfyui",
+        comfyZImageModel: s.comfyZImageModel || "z-image-turbo\\moodyProMix_zitV12DPO.safetensors",
+        comfyBuiltinWorkflow: "zimage",
+        comfyWorkflow: "",
+        width: 832,
+        height: 1216,
+        steps: 8,
+        cfgScale: 1,
+        sampler: "euler",
+        useLLMPrompt: true,
+        llmPromptStyle: "natural",
+        style: "none",
+    });
+    saveSettingsDebounced();
+    createUI();
+    loadCharSettings();
+    showStatus("Loaded Z-Image Turbo text workflow");
     setTimeout(hideStatus, 2000);
 }
 
@@ -10516,6 +10760,8 @@ function refreshProviderInputs(provider, { updateProviderVisibility = true } = {
             ["qig-comfy-timeout", "comfyTimeout"],
             ["qig-comfy-upscale", "comfyUpscale"],
             ["qig-comfy-upscale-model", "comfyUpscaleModel"],
+            ["qig-comfy-builtin-workflow", "comfyBuiltinWorkflow"],
+            ["qig-comfy-zimage-model", "comfyZImageModel"],
             ["qig-comfy-workflow", "comfyWorkflow"],
             ["qig-comfy-loras", "comfyLoras"],
             ["qig-a1111-model", "a1111Model"],
@@ -10631,6 +10877,18 @@ function refreshProviderInputs(provider, { updateProviderVisibility = true } = {
     if (provider === "nanobanana") renderNanobananaRefImages();
     if (provider === "nanogpt") renderNanogptRefImages();
     if (updateProviderVisibility) updateProviderUI();
+}
+
+function syncLocalRefImageUI(s = getSettings()) {
+    const preview = document.getElementById("qig-local-ref-preview");
+    const clear = document.getElementById("qig-local-ref-clear");
+    const denoise = document.getElementById("qig-local-denoise-wrap");
+    if (preview) {
+        preview.src = s.localRefImage || "";
+        preview.style.display = s.localRefImage ? "block" : "none";
+    }
+    if (clear) clear.style.display = s.localRefImage ? "block" : "none";
+    if (denoise) denoise.style.display = s.localType === "a1111" && s.localRefImage ? "block" : "none";
 }
 
 function updateProviderUI() {
@@ -10930,14 +11188,14 @@ function createUI() {
     const activeBatchLabel = `${activeBatchCount} image${activeBatchCount === 1 ? "" : "s"}`;
 
     const html = `
-    <div id="qig-settings" class="qig-settings" role="region" aria-label="Quick Image Gen settings">
+    <div id="qig-settings" class="qig-settings" role="region" aria-label="imguwu settings">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>Quick Image Gen</b>
+                <b>imguwu</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
-                <nav class="qig-action-bar" aria-label="Quick Image Gen primary actions">
+                <nav class="qig-action-bar" aria-label="imguwu primary actions">
                     <button id="qig-generate-btn" class="menu_button qig-primary-action" title="Generate image with current settings (Ctrl+Enter)" aria-label="Generate image with current settings">
                         <span class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></span>
                         <span>Generate</span>
@@ -10950,7 +11208,7 @@ function createUI() {
                 <div class="qig-menu-hero">
                     <div class="qig-menu-hero__summary">
                         <span class="qig-menu-eyebrow">Ready to generate</span>
-                        <div class="qig-menu-title">Quick Image Gen</div>
+                        <div class="qig-menu-title">imguwu</div>
                         <div class="qig-menu-meta">
                             <span>${esc(activeProviderName)}</span>
                             <span>${esc(activeStyleName)}</span>
@@ -10960,10 +11218,38 @@ function createUI() {
                     <div class="qig-hero-note">Set provider and prompt below. Generate stays available while you scroll.</div>
                 </div>
 
-                <div class="qig-quick-actions" aria-label="Quick Image Gen shortcuts">
+                <div class="qig-quick-actions" aria-label="imguwu shortcuts">
                     <button id="qig-save-char-btn" class="menu_button" title="Save current settings as defaults for this character"><span class="fa-solid fa-user-check"></span><span>Save Char</span></button>
                     <button id="qig-logs-btn" class="menu_button" title="View generation logs and errors"><span class="fa-solid fa-list-check"></span><span>Logs</span></button>
                 </div>
+
+                <section class="qig-menu-section" aria-labelledby="qig-character-identity-heading">
+                    <div class="qig-section-header">
+                        <div>
+                            <span id="qig-character-identity-heading" class="qig-section-kicker">Character Identity</span>
+                            <p>Persist the clean appearance text and reference image used for this character.</p>
+                        </div>
+                    </div>
+                    <div class="qig-field">
+                        <label for="qig-visual-identity">Visual Identity</label>
+                        <textarea id="qig-visual-identity" rows="4" placeholder="Face, hair, eyes, species/body traits, accessories, markings, and iconic outfit anchors.">${esc(s.visualIdentity || "")}</textarea>
+                        <small>This is stored by Save Char and fed into prompt generation before noisy card description text.</small>
+                    </div>
+                    <div class="qig-field">
+                        <label>Reference Image</label>
+                        <div style="display:flex;gap:4px;align-items:center;">
+                            <img id="qig-local-ref-preview" src="${esc(s.localRefImage || '')}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;display:${s.localRefImage ? 'block' : 'none'};background:#333;">
+                            <button id="qig-local-ref-card-btn" class="menu_button" title="Use the current character card image as this character's ComfyUI reference"><span class="fa-solid fa-address-card"></span><span>Use Card Image</span></button>
+                            <button id="qig-local-ref-btn" class="menu_button" style="flex:1;" title="Upload a reference image for this character"><span class="fa-solid fa-paperclip"></span><span>Upload Reference</span></button>
+                            <button id="qig-local-ref-clear" class="menu_button" style="width:30px;color:#e94560;display:${s.localRefImage ? 'block' : 'none'};">×</button>
+                        </div>
+                        <input type="file" id="qig-local-ref-input" accept="image/*" style="display:none">
+                        <small>Use the card image or upload a clearer face-forward reference. Save Char persists uploads for this character.</small>
+                    </div>
+                    <div class="qig-action-strip">
+                        <button id="qig-extract-visual-identity" class="menu_button" title="Ask the active text model to extract reusable appearance text from this card"><span class="fa-solid fa-wand-magic-sparkles"></span><span>Extract From Card</span></button>
+                    </div>
+                </section>
 
                 <section class="qig-menu-section qig-menu-section--connection" aria-labelledby="qig-connection-heading">
                     <div class="qig-section-header">
@@ -11222,15 +11508,11 @@ function createUI() {
                 </div>
 
                 <div id="qig-local-settings" class="qig-provider-section">
-                    <label>Local URL</label>
-                    <input id="qig-local-url" type="text" value="${esc(s.localUrl)}" placeholder="http://127.0.0.1:7860">
-                    <label>Type</label>
-                    <select id="qig-local-type">
-                        <option value="a1111" ${s.localType === "a1111" ? "selected" : ""}>Automatic1111</option>
-                        <option value="comfyui" ${s.localType === "comfyui" ? "selected" : ""}>ComfyUI</option>
-                    </select>
+                    <label>ComfyUI URL</label>
+                    <input id="qig-local-url" type="text" value="${esc(s.localUrl)}" placeholder="http://127.0.0.1:8188">
+                    <input id="qig-local-type" type="hidden" value="comfyui">
                     <div id="qig-local-comfyui-opts" style="display:${s.localType === "comfyui" ? "block" : "none"}">
-                         <label>Model</label>
+                         <label>Flux.2 Klein Reference Model</label>
                          <div style="display:flex;gap:4px;align-items:center;">
                              <select id="qig-local-model" style="flex:1;">
                                  <option value="${esc(s.localModel)}" selected>${esc(s.localModel || "-- Click Refresh --")}</option>
@@ -11238,6 +11520,16 @@ function createUI() {
                              <button id="qig-comfy-model-refresh" class="menu_button" style="padding:4px 8px;" title="Refresh model list">🔄</button>
                          </div>
                          <div class="form-hint">Click Refresh to load checkpoints (standard mode) or diffusion UNETs (Flux/UNET mode) from ComfyUI, or type a model manually.</div>
+                         <label>Built-in Workflow</label>
+                         <select id="qig-comfy-builtin-workflow">
+                            <option value="auto" ${(s.comfyBuiltinWorkflow || "auto") === "auto" ? "selected" : ""}>Auto: Flux reference when available, Z-Image when missing</option>
+                            <option value="flux2" ${s.comfyBuiltinWorkflow === "flux2" ? "selected" : ""}>Flux.2 Klein reference</option>
+                            <option value="zimage" ${s.comfyBuiltinWorkflow === "zimage" ? "selected" : ""}>Z-Image Turbo text generation</option>
+                         </select>
+                         <small style="opacity:0.6;font-size:10px;">Custom Workflow JSON below overrides the built-in workflow selector.</small>
+                         <label>Z-Image Turbo Model</label>
+                         <input id="qig-comfy-zimage-model" type="text" value="${esc(s.comfyZImageModel || "z-image-turbo\\moodyProMix_zitV12DPO.safetensors")}" placeholder="z-image-turbo\\moodyProMix_zitV12DPO.safetensors">
+                         <small style="opacity:0.6;font-size:10px;">Used when Auto has no saved reference image, or when Z-Image is selected.</small>
                          <div class="qig-row">
                             <div><label>Denoise</label><input id="qig-comfy-denoise" type="number" value="${esc(s.comfyDenoise ?? 1.0)}" min="0" max="1" step="0.05"><small style="opacity:0.6;font-size:10px;">1.0 = full txt2img. For img2img: upload a Reference Image below and set Denoise &lt; 1.0</small></div>
                             <div><label>CLIP Skip</label><input id="qig-comfy-clip" type="number" value="${esc(s.comfyClipSkip || 1)}" min="1" max="12" step="1"><small style="opacity:0.6;font-size:10px;">1 for most models, 2 for anime/NAI-based</small></div>
@@ -11280,6 +11572,8 @@ function createUI() {
                          <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters. Filename must match your ComfyUI loras folder.</small>
                          <input id="qig-comfy-loras" type="text" value="${esc(s.comfyLoras || "")}" placeholder="my_lora.safetensors:0.8, style_lora.safetensors:0.6">
                          <label>Workflow Preset</label>
+                         <button id="qig-comfy-flux2-character-workflow" class="menu_button qig-inline-action" title="Load the Flux.2 Klein character-reference workflow and recommended settings"><span class="fa-solid fa-user-astronaut"></span><span>Use Flux.2 Klein Character Workflow</span></button>
+                         <button id="qig-comfy-zimage-workflow" class="menu_button qig-inline-action" title="Use the built-in Z-Image Turbo workflow and recommended text-generation settings"><span class="fa-solid fa-wand-sparkles"></span><span>Use Z-Image Turbo Workflow</span></button>
                          <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;">
                              <select id="qig-comfy-workflow-select" style="flex:1;min-width:180px;">${comfyWorkflowPresetOpts}</select>
                              <button id="qig-comfy-workflow-load" class="menu_button" style="padding:2px 8px;">📂 Load</button>
@@ -11540,19 +11834,6 @@ function createUI() {
                              <div class="form-hint">Upload a preprocessed control image (edge map, depth map, pose, etc.) or let the preprocessor extract it</div>
                          </div>
                     </div>
-                    <hr style="margin:8px 0;opacity:0.2;">
-                    <label>Reference Image</label>
-                    <div style="display:flex;gap:4px;align-items:center;">
-                        <img id="qig-local-ref-preview" src="${esc(s.localRefImage || '')}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;display:${s.localRefImage ? 'block' : 'none'};background:#333;">
-                        <button id="qig-local-ref-btn" class="menu_button" style="flex:1;">📎 Upload Source</button>
-                        <button id="qig-local-ref-clear" class="menu_button" style="width:30px;color:#e94560;display:${s.localRefImage ? 'block' : 'none'};">×</button>
-                    </div>
-                    <input type="file" id="qig-local-ref-input" accept="image/*" style="display:none">
-                    <div id="qig-local-denoise-wrap" style="display:${s.localType === "a1111" && s.localRefImage ? "block" : "none"};margin-top:4px;">
-                       <label>Denoising Strength: <span id="qig-local-denoise-val">${s.localDenoise}</span></label>
-                       <input id="qig-local-denoise" type="range" min="0" max="1" step="0.05" value="${esc(s.localDenoise)}">
-                    </div>
-                    <div class="form-hint" style="margin-top:4px;">Upload a source image for img2img. ${s.localType === "comfyui" ? "Use the Denoise slider in ComfyUI settings above to control strength." : "Adjust Denoising Strength to control how much the output differs."}</div>
                 </div>
                 
                 <div id="qig-proxy-settings" class="qig-provider-section">
@@ -11692,7 +11973,6 @@ function createUI() {
                         <small id="qig-prompt-help">Used for manual generation, or as scene context when LLM prompt is enabled.</small>
                     </div>
                     <div class="qig-action-strip">
-                        <button id="qig-chatgpt-nbp-setup" class="menu_button qig-inline-action" title="Set QIG for ChatGPT prompt writing and Nano Banana Pro image rendering"><span class="fa-solid fa-wand-magic-sparkles"></span><span>ChatGPT + NBP</span></button>
                         <button id="qig-plain-desc-btn" class="menu_button" title="Write a plain-language image description and let the AI turn it into a prompt"><span class="fa-solid fa-pen-to-square"></span><span>Plain Description</span></button>
                         <button id="qig-save-preset" class="menu_button" title="Save all generation settings as a preset"><span class="fa-solid fa-bookmark"></span><span>Save Preset</span></button>
                         <button id="qig-export-btn" class="menu_button"><span class="fa-solid fa-file-export"></span><span>Export</span></button>
@@ -12009,13 +12289,13 @@ function createUI() {
     document.getElementById("qig-generate-btn").onclick = () => runConfiguredPaletteGeneration();
     document.getElementById("qig-logs-btn").onclick = showLogs;
     document.getElementById("qig-save-char-btn").onclick = saveCharSettings;
+    document.getElementById("qig-extract-visual-identity").onclick = generateCharacterVisualIdentity;
+    document.getElementById("qig-local-ref-card-btn").onclick = useCurrentCardAsReferenceImage;
     document.getElementById("qig-gallery-settings-btn").onclick = showGallery;
     document.getElementById("qig-prompt-history-btn").onclick = showPromptHistory;
-    document.getElementById("qig-chatgpt-nbp-setup").onclick = () => {
-        applyChatGptNbpWorkflowPreset();
-        createUI();
-        const promptSection = document.getElementById("qig-prompt");
-        promptSection?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    document.getElementById("qig-visual-identity").oninput = (e) => {
+        getSettings().visualIdentity = e.target.value;
+        saveSettingsDebounced();
     };
     document.getElementById("qig-plain-desc-btn").onclick = generateImageFromPlainDescription;
     document.getElementById("qig-profile-save").onclick = saveConnectionProfile;
@@ -12031,6 +12311,8 @@ function createUI() {
     renderProfileSelect();
     renderComfyWorkflowPresets();
     renderContextualFilters();
+    document.getElementById("qig-comfy-flux2-character-workflow").onclick = applyFlux2KleinCharacterWorkflow;
+    document.getElementById("qig-comfy-zimage-workflow").onclick = applyZImageTurboWorkflow;
 
     document.getElementById("qig-provider").onchange = (e) => {
         getSettings().provider = e.target.value;
@@ -12154,9 +12436,13 @@ function createUI() {
         saveSettingsDebounced();
     };
     bind("qig-local-denoise", "localDenoise", true);
-    document.getElementById("qig-local-denoise").oninput = (e) => {
-        document.getElementById("qig-local-denoise-val").textContent = e.target.value;
-    };
+    const localDenoiseInput = document.getElementById("qig-local-denoise");
+    if (localDenoiseInput) {
+        localDenoiseInput.oninput = (e) => {
+            const valueEl = document.getElementById("qig-local-denoise-val");
+            if (valueEl) valueEl.textContent = e.target.value;
+        };
+    }
     // ComfyUI specific bindings
     bind("qig-comfy-denoise", "comfyDenoise", true);
     bind("qig-comfy-clip", "comfyClipSkip", true);
@@ -12427,10 +12713,7 @@ function createUI() {
         const s = getSettings();
         s.localRefImage = "";
         saveSettingsDebounced();
-        document.getElementById("qig-local-ref-preview").style.display = "none";
-        document.getElementById("qig-local-ref-preview").src = "";
-        localRefClear.style.display = "none";
-        document.getElementById("qig-local-denoise-wrap").style.display = "none";
+        syncLocalRefImageUI(s);
     };
     localRefInput.onchange = (e) => {
         const file = e.target.files[0];
@@ -12440,10 +12723,7 @@ function createUI() {
             const s = getSettings();
             s.localRefImage = ev.target.result;
             saveSettingsDebounced();
-            document.getElementById("qig-local-ref-preview").src = s.localRefImage;
-            document.getElementById("qig-local-ref-preview").style.display = "block";
-            localRefClear.style.display = "block";
-            document.getElementById("qig-local-denoise-wrap").style.display = s.localType === "a1111" ? "block" : "none";
+            syncLocalRefImageUI(s);
             localRefInput.value = "";
         };
         reader.readAsDataURL(file);

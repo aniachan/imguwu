@@ -2,7 +2,7 @@
 
 Custom ComfyUI workflows use API-format JSON from ComfyUI's `Save (API Format)` export. Paste that JSON into `Custom Workflow JSON`.
 
-QIG replaces placeholders anywhere inside string values before sending the workflow to `/prompt`.
+imguwu replaces placeholders anywhere inside string values before sending the workflow to `/prompt`.
 
 | Placeholder | Value |
 | --- | --- |
@@ -18,7 +18,7 @@ QIG replaces placeholders anywhere inside string values before sending the workf
 | `%sampler%` | ComfyUI sampler name derived from the selected sampler. |
 | `%scheduler%` | Current ComfyUI scheduler setting. |
 | `%model%` | Current Local Model field. |
-| `%reference_image%` | Uploaded ComfyUI image filename for the Local reference image, or an empty string when no reference image is set. |
+| `%reference_image%` | Uploaded ComfyUI image filename for the current ComfyUI reference image, or an empty string when no reference image is set. Card-image and uploaded character references resolve through this same placeholder. |
 
 ## Typed Values
 
@@ -38,17 +38,21 @@ Those become numbers in the submitted workflow. If a placeholder is embedded ins
 
 ## Reference Images
 
-To use the Local reference image in a custom workflow:
+To use the character reference image in a custom workflow:
 
 1. Add a `LoadImage` node in ComfyUI.
 2. Export the workflow in API format.
 3. Set that node's `image` input to `%reference_image%`.
 
-If no Local reference image is selected, `%reference_image%` becomes an empty string.
+If no character reference image is selected, `%reference_image%` becomes an empty string.
+
+The built-in Auto mode uses the Flux.2 Klein workflow when `%reference_image%` exists. That graph loads the image, encodes it through the Flux.2 VAE, and passes it into `ReferenceLatent`. Use `Use Card Image` for the current character card image or upload a clearer reference in the Character Identity section. Card-image capture saves immediately; uploaded references persist with `Save Char`.
+
+When Auto has no character reference image, it switches to the built-in Z-Image Turbo text-generation graph instead of sending an empty reference into Flux.2 Klein.
 
 ## Notes
 
 - Placeholders are replaced only in JSON string values.
 - Use API-format JSON, not the regular visual workflow export.
-- If the custom workflow JSON cannot be parsed, QIG falls back to its built-in default workflow.
+- If the custom workflow JSON cannot be parsed, imguwu falls back to its built-in default workflow.
 - Runtime ComfyUI or proxy JSON errors are reported as runtime errors instead of being relabeled as invalid workflow JSON.

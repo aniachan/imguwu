@@ -88,8 +88,10 @@ Change the model fields in the ComfyUI settings when your local filenames or
 folders differ.
 
 The ComfyUI settings include a LoRA manager. Refresh it to pick files returned
-by ComfyUI's `LoraLoader`, then enable files and adjust weights. Enabled LoRAs
-are injected into loader-compatible built-in and custom API workflows.
+by ComfyUI's `LoraLoader`, then enable files and adjust weights. imguwu scopes
+the list and runtime injection to the active family folder:
+`z-image-turbo/` or `flux2-klein/`. Enabled LoRAs are injected into
+loader-compatible built-in and custom API workflows.
 
 ## Custom Workflows
 

@@ -346,7 +346,27 @@
 
 #qig-comfy-lora-list {
     display: grid;
+    gap: 9px;
+}
+
+.qig-lora-group {
+    display: grid;
     gap: 6px;
+    min-width: 0;
+    padding: 8px;
+    border: 1px solid var(--qig-line);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 64%, transparent);
+}
+
+.qig-lora-group__header {
+    min-width: 0;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--qig-line);
+}
+
+.qig-lora-group__header small {
+    overflow-wrap: anywhere;
 }
 
 .qig-lora-row {
@@ -358,15 +378,18 @@
 }
 
 .qig-lora-row .checkbox_label {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: 6px;
     min-width: 0;
     margin: 0;
 }
 
 .qig-lora-row .checkbox_label span {
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
 }
 
 .qig-lora-row input.qig-comfy-lora-weight {

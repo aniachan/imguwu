@@ -720,6 +720,10 @@ let activeFilterPoolIdsByCard = safeParse("qig_active_pool_ids_by_card", {});
 let activeFilterPoolIdsByChar = safeParse("qig_active_pool_ids_by_char", {});
 let selectedComfyWorkflowId = "";
 let comfyLoraFilesCache = [];
+const COMFY_LORA_FAMILIES = Object.freeze({
+    flux2: { id: "flux2", prefix: "flux2-klein/", label: "Flux.2 Klein" },
+    zimage: { id: "zimage", prefix: "z-image-turbo/", label: "Z-Image Turbo" },
+});
 let isGenerating = false;
 const blobUrls = new Set();
 let batchKeyHandler = null;
@@ -2420,8 +2424,40 @@ function serializeComfyLoras(loras) {
         .join(", ");
 }
 
+function normalizeComfyModelPath(value) {
+    return String(value || "").trim().replace(/\\/g, "/");
+}
+
+function getActiveComfyLoraFamily(settings = getSettings()) {
+    const s = settings || {};
+    const workflowMode = String(s.comfyBuiltinWorkflow || "auto").trim();
+    if (workflowMode === "flux2") return COMFY_LORA_FAMILIES.flux2;
+    if (workflowMode === "zimage") return COMFY_LORA_FAMILIES.zimage;
+    return s.localRefImage ? COMFY_LORA_FAMILIES.flux2 : COMFY_LORA_FAMILIES.zimage;
+}
+
+function getComfyLoraFamily(name) {
+    const normalized = normalizeComfyModelPath(name).toLowerCase();
+    return Object.values(COMFY_LORA_FAMILIES).find(family => normalized.startsWith(family.prefix)) || null;
+}
+
+function getComfyLoraDisplayName(name, family = getComfyLoraFamily(name)) {
+    const normalized = normalizeComfyModelPath(name);
+    return family && normalized.toLowerCase().startsWith(family.prefix)
+        ? normalized.slice(family.prefix.length)
+        : normalized;
+}
+
+function getActiveComfyLoras(value, settings = getSettings()) {
+    const activeFamily = getActiveComfyLoraFamily(settings);
+    return parseComfyLoras(value).filter(lora => {
+        const family = getComfyLoraFamily(lora.name);
+        return !activeFamily || family?.id === activeFamily.id;
+    });
+}
+
 function injectComfyLorasIntoApiWorkflow(workflow, loraSetting) {
-    const loras = parseComfyLoras(loraSetting);
+    const loras = getActiveComfyLoras(loraSetting);
     if (!workflow || !loras.length) return 0;
     const entries = Object.entries(workflow);
     const modelRoot = entries.find(([, node]) => ["UNETLoader", "CheckpointLoaderSimple"].includes(node?.class_type))?.[0];
@@ -2465,11 +2501,19 @@ function injectComfyLorasIntoApiWorkflow(workflow, loraSetting) {
 }
 
 function getManagedComfyLoras() {
+    const activeFamily = getActiveComfyLoraFamily();
     const configured = parseComfyLoras(getSettings()?.comfyLoras);
     const configuredByName = new Map(configured.map(lora => [lora.name, lora]));
-    const names = uniqueStringList([...comfyLoraFilesCache, ...configured.map(lora => lora.name)]);
+    const matchesActiveFamily = name => {
+        const family = getComfyLoraFamily(name);
+        return !activeFamily || family?.id === activeFamily.id;
+    };
+    const names = uniqueStringList([...comfyLoraFilesCache, ...configured.map(lora => lora.name)])
+        .filter(matchesActiveFamily);
     return names.map(name => ({
         name,
+        family: getComfyLoraFamily(name),
+        displayName: getComfyLoraDisplayName(name),
         weight: configuredByName.get(name)?.weight ?? 0.8,
         enabled: configuredByName.has(name),
         available: comfyLoraFilesCache.length === 0 || comfyLoraFilesCache.includes(name),
@@ -2478,7 +2522,12 @@ function getManagedComfyLoras() {
 
 function persistManagedComfyLoras(loras) {
     const s = getSettings();
-    s.comfyLoras = serializeComfyLoras(loras);
+    const activeFamily = getActiveComfyLoraFamily(s);
+    const hiddenFamilyLoras = parseComfyLoras(s.comfyLoras).filter(lora => {
+        const family = getComfyLoraFamily(lora.name);
+        return activeFamily && family?.id !== activeFamily.id;
+    }).map(lora => ({ ...lora, enabled: true }));
+    s.comfyLoras = serializeComfyLoras([...hiddenFamilyLoras, ...loras]);
     const raw = document.getElementById("qig-comfy-loras");
     if (raw) raw.value = s.comfyLoras;
     saveSettingsDebounced?.();
@@ -2487,21 +2536,45 @@ function persistManagedComfyLoras(loras) {
 function renderComfyLoraManager() {
     const root = document.getElementById("qig-comfy-lora-list");
     if (!root) return;
+    const activeFamily = getActiveComfyLoraFamily();
     const loras = getManagedComfyLoras();
     if (!loras.length) {
-        root.innerHTML = `<div class="qig-muted">Refresh to pick LoRA files from ComfyUI, or add a filename manually.</div>`;
+        root.innerHTML = `<div class="qig-muted">Refresh to pick ${escapeHtml(activeFamily?.label || "matching")} LoRA files from ComfyUI. Expected folder: ${escapeHtml(activeFamily?.prefix || "z-image-turbo/ or flux2-klein/")}.</div>`;
         return;
     }
-    root.innerHTML = loras.map((lora, index) => `
-        <div class="qig-lora-row" data-index="${index}">
-            <label class="checkbox_label" title="${lora.available ? "Use this LoRA" : "Saved LoRA file was not returned by ComfyUI"}">
+    const groupOrder = [COMFY_LORA_FAMILIES.flux2.id, COMFY_LORA_FAMILIES.zimage.id, "manual"];
+    const groups = new Map();
+    loras.forEach((lora, index) => {
+        const key = lora.family?.id || "manual";
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push({ ...lora, index });
+    });
+    const renderLoraRow = lora => `
+        <div class="qig-lora-row" data-index="${lora.index}">
+            <label class="checkbox_label qig-lora-name" title="${escapeHtml(lora.name)}">
                 <input class="qig-comfy-lora-enabled" type="checkbox" ${lora.enabled ? "checked" : ""}>
-                <span>${escapeHtml(lora.name)}</span>
+                <span>${escapeHtml(lora.displayName)}</span>
             </label>
             <input class="qig-comfy-lora-weight" type="number" min="-4" max="4" step="0.05" value="${escapeHtml(lora.weight)}" aria-label="LoRA weight for ${escapeHtml(lora.name)}">
             <button class="menu_button qig-comfy-lora-remove" type="button" title="Remove saved LoRA" aria-label="Remove saved LoRA"><span class="fa-solid fa-xmark"></span></button>
         </div>
-    `).join("");
+    `;
+    root.innerHTML = groupOrder
+        .filter(key => groups.has(key))
+        .map(key => {
+            const rows = groups.get(key);
+            const family = rows[0]?.family;
+            const label = family?.label || "Saved manual LoRAs";
+            const prefix = family?.prefix || "Filename must use a model family folder.";
+            return `<section class="qig-lora-group">
+                <div class="qig-lora-group__header">
+                    <span class="qig-card-title">${escapeHtml(label)}</span>
+                    <small>${escapeHtml(prefix)}</small>
+                </div>
+                ${rows.map(renderLoraRow).join("")}
+            </section>`;
+        })
+        .join("");
     root.querySelectorAll(".qig-lora-row").forEach(row => {
         const index = Number(row.dataset.index);
         row.querySelector(".qig-comfy-lora-enabled").onchange = e => {
@@ -2528,8 +2601,15 @@ function renderComfyLoraManager() {
 
 function addManualComfyLora() {
     const input = document.getElementById("qig-comfy-lora-add-name");
-    const name = String(input?.value || "").trim();
-    if (!name) return;
+    const typedName = normalizeComfyModelPath(input?.value);
+    if (!typedName) return;
+    const activeFamily = getActiveComfyLoraFamily();
+    const typedFamily = getComfyLoraFamily(typedName);
+    const name = !typedFamily && activeFamily ? `${activeFamily.prefix}${typedName}` : typedName;
+    if (activeFamily && getComfyLoraFamily(name)?.id !== activeFamily.id) {
+        toastr.warning(`Use a ${activeFamily.prefix} LoRA for the active ${activeFamily.label} workflow`);
+        return;
+    }
     const loras = getManagedComfyLoras();
     const existing = loras.find(lora => lora.name === name);
     if (existing) {
@@ -6445,27 +6525,21 @@ async function genLocal(prompt, negative, s, signal) {
         }
 
         // LoRA injection for ComfyUI default workflow
-        if (s.comfyLoras && s.comfyLoras.trim()) {
+        const activeComfyLoras = getActiveComfyLoras(s.comfyLoras, s);
+        if (activeComfyLoras.length) {
             let loraNodeStart = 20;
             let lastModelRef = fluxMode ? ["11", 0] : ["4", 0];
             let lastClipRef = fluxMode ? ["12", 0] : ["4", 1];
-            const loras = s.comfyLoras.split(",").map(l => l.trim()).filter(l => l);
             let injectedCount = 0;
-            loras.forEach((l, i) => {
-                const lastColon = l.lastIndexOf(":");
-                const hasWeight = lastColon > 0 && !isNaN(parseFloat(l.slice(lastColon + 1)));
-                const name = (hasWeight ? l.slice(0, lastColon) : l).trim();
-                const pw = hasWeight ? parseFloat(l.slice(lastColon + 1)) : NaN;
-                const weight = isNaN(pw) ? 0.8 : pw;
-                if (!name) return;
+            activeComfyLoras.forEach((lora, i) => {
                 injectedCount++;
                 const nodeId = String(loraNodeStart + i);
                 workflowNodes[nodeId] = {
                     class_type: "LoraLoader",
                     inputs: {
-                        lora_name: name,
-                        strength_model: weight,
-                        strength_clip: weight,
+                        lora_name: lora.name,
+                        strength_model: lora.weight,
+                        strength_clip: lora.weight,
                         model: lastModelRef,
                         clip: lastClipRef
                     }
@@ -11938,11 +12012,11 @@ function createUI() {
                             <small style="opacity:0.6;font-size:10px;">From models/vae/. Required for UNET-only models.</small>
                          </div>
                          <label>LoRA Manager</label>
-                         <small style="opacity:0.6;font-size:10px;">Enabled LoRAs are saved with ComfyUI settings and used by standard loader-compatible workflows.</small>
+                         <small style="opacity:0.6;font-size:10px;">Only the active model family's LoRAs are shown and injected: z-image-turbo/ or flux2-klein/.</small>
                          <input id="qig-comfy-loras" type="hidden" value="${esc(s.comfyLoras || "")}">
                          <div class="qig-lora-manager">
                             <div class="qig-inline-control">
-                                <input id="qig-comfy-lora-add-name" class="qig-inline-control__main" type="text" placeholder="Add filename from models/loras">
+                                <input id="qig-comfy-lora-add-name" class="qig-inline-control__main" type="text" placeholder="Add LoRA filename in active family folder">
                                 <button id="qig-comfy-lora-add" class="menu_button" type="button" title="Add LoRA filename"><span class="fa-solid fa-plus"></span></button>
                                 <button id="qig-comfy-lora-refresh" class="menu_button" type="button" title="Refresh LoRA files from ComfyUI"><span class="fa-solid fa-rotate"></span><span>Files</span></button>
                             </div>
@@ -12830,6 +12904,13 @@ function createUI() {
     bind("qig-comfy-timeout", "comfyTimeout", true);
     bindCheckbox("qig-comfy-upscale", "comfyUpscale");
     bind("qig-comfy-upscale-model", "comfyUpscaleModel");
+    document.getElementById("qig-comfy-builtin-workflow").onchange = e => {
+        getSettings().comfyBuiltinWorkflow = e.target.value;
+        comfyLoraFilesCache = [];
+        saveSettingsDebounced();
+        renderComfyLoraManager();
+    };
+    bind("qig-comfy-zimage-model", "comfyZImageModel");
     document.getElementById("qig-comfy-upscale").onchange = (e) => {
         getSettings().comfyUpscale = e.target.checked;
         saveSettingsDebounced();
@@ -12849,9 +12930,14 @@ function createUI() {
         const button = document.getElementById("qig-comfy-lora-refresh");
         if (button) button.disabled = true;
         try {
-            comfyLoraFilesCache = await fetchComfyUILoras(getSettings().localUrl);
+            const activeFamily = getActiveComfyLoraFamily();
+            comfyLoraFilesCache = (await fetchComfyUILoras(getSettings().localUrl))
+                .filter(name => {
+                    const family = getComfyLoraFamily(name);
+                    return !activeFamily || family?.id === activeFamily.id;
+                });
             renderComfyLoraManager();
-            toastr.info(`Loaded ${comfyLoraFilesCache.length} LoRA file${comfyLoraFilesCache.length === 1 ? "" : "s"} from ComfyUI`);
+            toastr.info(`Loaded ${comfyLoraFilesCache.length} ${activeFamily?.label || "matching"} LoRA file${comfyLoraFilesCache.length === 1 ? "" : "s"} from ComfyUI`);
         } catch (e) {
             toastr.error(e.message, "ComfyUI LoRA refresh failed");
         } finally {

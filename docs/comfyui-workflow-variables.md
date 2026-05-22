@@ -46,7 +46,16 @@ To use the character reference image in a custom workflow:
 
 If no character reference image is selected, `%reference_image%` becomes an empty string.
 
-The built-in Auto mode uses the Flux.2 Klein workflow when `%reference_image%` exists. That graph loads the image, encodes it through the Flux.2 VAE, and passes it into `ReferenceLatent`. Use `Use Card Image` for the current character card image or upload a clearer reference in the Character Identity section. Card-image capture saves immediately; uploaded references persist with `Save Char`.
+imguwu fetches the saved reference from SillyTavern at generation time, uploads
+it to ComfyUI input storage, and binds API-format `LoadImage` nodes to that
+uploaded input. That prevents reference workflows from depending on a static
+image file path on the ComfyUI machine.
+
+The built-in Auto mode uses the Flux.2 Klein workflow when `%reference_image%` exists. That graph loads the uploaded input image, encodes it through the Flux.2 VAE, and passes it into `ReferenceLatent`. Use `Use Card Image` for the current character card image or upload a clearer reference in the Character Identity section. Card-image capture saves immediately; uploaded references persist with `Save Char`.
+
+After ComfyUI finishes, imguwu fetches the generated image back from ComfyUI
+before SillyTavern displays, inserts, or saves it. Chat output therefore does
+not rely on a ComfyUI `/view` URL remaining reachable.
 
 When Auto has no character reference image, it switches to the built-in Z-Image Turbo text-generation graph instead of sending an empty reference into Flux.2 Klein.
 

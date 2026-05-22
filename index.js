@@ -325,6 +325,25 @@ function setupQigCollapsibleSection(sectionId, buttonId, contentId) {
     };
 }
 
+function setupQigSettingsTabs() {
+    const buttons = [...document.querySelectorAll("[data-qig-tab-button]")];
+    const panels = [...document.querySelectorAll("[data-qig-tab-panel]")];
+    const activate = activeTab => {
+        buttons.forEach(button => {
+            const isActive = button.dataset.qigTabButton === activeTab;
+            button.classList.toggle("is-active", isActive);
+            button.setAttribute("aria-selected", isActive ? "true" : "false");
+        });
+        panels.forEach(panel => {
+            panel.hidden = panel.dataset.qigTabPanel !== activeTab;
+        });
+    };
+    buttons.forEach(button => {
+        button.onclick = () => activate(button.dataset.qigTabButton);
+    });
+    activate(buttons.find(button => button.classList.contains("is-active"))?.dataset.qigTabButton || "character");
+}
+
 function getNanobananaAspectRatio(settings = getSettings()) {
     const width = Math.max(1, parseIntOr(settings?.width, SIZE_DEFAULT));
     const height = Math.max(1, parseIntOr(settings?.height, SIZE_DEFAULT));
@@ -567,6 +586,8 @@ const defaultSettings = {
     comfyWorkflow: "",
     comfyBuiltinWorkflow: "auto",
     comfyZImageModel: "z-image-turbo\\moodyProMix_zitV12DPO.safetensors",
+    comfyExpressionLabels: "neutral, joy, amusement, anger, sadness, surprise",
+    comfyExpressionPromptTemplate: "SillyTavern character expression sprite for {{char}}. Character visual identity: {{identity}}. Expression: {{expression}}. Single character, expressive face and pose, preserve the same face, hair, eyes, outfit anchors, and art style across the sprite set. Clean readable silhouette, no text, no watermark.",
     comfyClipSkip: 1,
     comfyDenoise: 1.0,
     comfyScheduler: "normal",
@@ -698,6 +719,7 @@ let activeFilterPoolIdsGlobal = safeParse("qig_active_pool_ids_global", []);
 let activeFilterPoolIdsByCard = safeParse("qig_active_pool_ids_by_card", {});
 let activeFilterPoolIdsByChar = safeParse("qig_active_pool_ids_by_char", {});
 let selectedComfyWorkflowId = "";
+let comfyLoraFilesCache = [];
 let isGenerating = false;
 const blobUrls = new Set();
 let batchKeyHandler = null;
@@ -2351,6 +2373,162 @@ async function fetchComfyUIModels(url, preferUnet = false) {
     }
 }
 
+async function fetchComfyUILoras(url) {
+    try {
+        return await fetchComfyNodeModelList(url.replace(/\/$/, ""), "LoraLoader", "lora_name");
+    } catch (e) {
+        log("Failed to fetch ComfyUI LoRA list: " + e.message);
+        if (e.message?.includes("403 Forbidden")) throw e;
+        return [];
+    }
+}
+
+function parseComfyLoras(value) {
+    return String(value || "")
+        .split(",")
+        .map(raw => raw.trim())
+        .filter(Boolean)
+        .map(raw => {
+            const lastColon = raw.lastIndexOf(":");
+            const parsedWeight = lastColon > 0 ? Number.parseFloat(raw.slice(lastColon + 1)) : NaN;
+            const hasWeight = Number.isFinite(parsedWeight);
+            return {
+                name: (hasWeight ? raw.slice(0, lastColon) : raw).trim(),
+                weight: hasWeight ? parsedWeight : 0.8,
+            };
+        })
+        .filter(lora => lora.name);
+}
+
+function serializeComfyLoras(loras) {
+    return (loras || [])
+        .filter(lora => lora?.enabled !== false && String(lora?.name || "").trim())
+        .map(lora => `${String(lora.name).trim()}:${Number.isFinite(Number(lora.weight)) ? Number(lora.weight) : 0.8}`)
+        .join(", ");
+}
+
+function injectComfyLorasIntoApiWorkflow(workflow, loraSetting) {
+    const loras = parseComfyLoras(loraSetting);
+    if (!workflow || !loras.length) return 0;
+    const entries = Object.entries(workflow);
+    const modelRoot = entries.find(([, node]) => ["UNETLoader", "CheckpointLoaderSimple"].includes(node?.class_type))?.[0];
+    const clipRoot = entries.find(([, node]) => ["CLIPLoader", "DualCLIPLoader", "CheckpointLoaderSimple"].includes(node?.class_type))?.[0];
+    if (!modelRoot || !clipRoot) return 0;
+
+    let nextId = Math.max(0, ...Object.keys(workflow).map(id => Number.parseInt(id, 10)).filter(Number.isFinite)) + 1;
+    let modelRef = [modelRoot, 0];
+    let clipRef = [clipRoot, clipRoot === modelRoot ? 1 : 0];
+    const addedNodes = {};
+    for (const lora of loras) {
+        const nodeId = String(nextId++);
+        addedNodes[nodeId] = {
+            class_type: "LoraLoader",
+            inputs: {
+                lora_name: lora.name,
+                strength_model: lora.weight,
+                strength_clip: lora.weight,
+                model: modelRef,
+                clip: clipRef,
+            },
+        };
+        modelRef = [nodeId, 0];
+        clipRef = [nodeId, 1];
+    }
+
+    const replaceRefs = value => {
+        if (Array.isArray(value)) {
+            if (value.length === 2 && String(value[0]) === String(modelRoot) && value[1] === 0) return [...modelRef];
+            if (value.length === 2 && String(value[0]) === String(clipRoot) && value[1] === (clipRoot === modelRoot ? 1 : 0)) return [...clipRef];
+            return value.map(item => replaceRefs(item));
+        }
+        if (value && typeof value === "object") {
+            for (const key of Object.keys(value)) value[key] = replaceRefs(value[key]);
+        }
+        return value;
+    };
+    replaceRefs(workflow);
+    Object.assign(workflow, addedNodes);
+    return loras.length;
+}
+
+function getManagedComfyLoras() {
+    const configured = parseComfyLoras(getSettings()?.comfyLoras);
+    const configuredByName = new Map(configured.map(lora => [lora.name, lora]));
+    const names = uniqueStringList([...comfyLoraFilesCache, ...configured.map(lora => lora.name)]);
+    return names.map(name => ({
+        name,
+        weight: configuredByName.get(name)?.weight ?? 0.8,
+        enabled: configuredByName.has(name),
+        available: comfyLoraFilesCache.length === 0 || comfyLoraFilesCache.includes(name),
+    }));
+}
+
+function persistManagedComfyLoras(loras) {
+    const s = getSettings();
+    s.comfyLoras = serializeComfyLoras(loras);
+    const raw = document.getElementById("qig-comfy-loras");
+    if (raw) raw.value = s.comfyLoras;
+    saveSettingsDebounced?.();
+}
+
+function renderComfyLoraManager() {
+    const root = document.getElementById("qig-comfy-lora-list");
+    if (!root) return;
+    const loras = getManagedComfyLoras();
+    if (!loras.length) {
+        root.innerHTML = `<div class="qig-muted">Refresh to pick LoRA files from ComfyUI, or add a filename manually.</div>`;
+        return;
+    }
+    root.innerHTML = loras.map((lora, index) => `
+        <div class="qig-lora-row" data-index="${index}">
+            <label class="checkbox_label" title="${lora.available ? "Use this LoRA" : "Saved LoRA file was not returned by ComfyUI"}">
+                <input class="qig-comfy-lora-enabled" type="checkbox" ${lora.enabled ? "checked" : ""}>
+                <span>${escapeHtml(lora.name)}</span>
+            </label>
+            <input class="qig-comfy-lora-weight" type="number" min="-4" max="4" step="0.05" value="${escapeHtml(lora.weight)}" aria-label="LoRA weight for ${escapeHtml(lora.name)}">
+            <button class="menu_button qig-comfy-lora-remove" type="button" title="Remove saved LoRA" aria-label="Remove saved LoRA"><span class="fa-solid fa-xmark"></span></button>
+        </div>
+    `).join("");
+    root.querySelectorAll(".qig-lora-row").forEach(row => {
+        const index = Number(row.dataset.index);
+        row.querySelector(".qig-comfy-lora-enabled").onchange = e => {
+            loras[index].enabled = e.target.checked;
+            persistManagedComfyLoras(loras);
+        };
+        row.querySelector(".qig-comfy-lora-weight").onchange = e => {
+            loras[index].weight = parseFloatOr(e.target.value, 0.8);
+            loras[index].enabled = true;
+            persistManagedComfyLoras(loras);
+            renderComfyLoraManager();
+        };
+        row.querySelector(".qig-comfy-lora-remove").onclick = () => {
+            if (loras[index].available && comfyLoraFilesCache.length > 0) {
+                loras[index].enabled = false;
+            } else {
+                loras.splice(index, 1);
+            }
+            persistManagedComfyLoras(loras);
+            renderComfyLoraManager();
+        };
+    });
+}
+
+function addManualComfyLora() {
+    const input = document.getElementById("qig-comfy-lora-add-name");
+    const name = String(input?.value || "").trim();
+    if (!name) return;
+    const loras = getManagedComfyLoras();
+    const existing = loras.find(lora => lora.name === name);
+    if (existing) {
+        existing.enabled = true;
+    } else {
+        loras.push({ name, weight: 0.8, enabled: true, available: false });
+    }
+    if (input) input.value = "";
+    persistManagedComfyLoras(loras);
+    renderComfyLoraManager();
+}
+
 const cachedElements = {};
 
 function getOrCacheElement(id) {
@@ -2661,7 +2839,8 @@ async function loadSettings() {
     s.outputMode = normalizeOutputMode(s.outputMode);
     s.manualInsertTarget = normalizeManualInsertTarget(s.manualInsertTarget);
     cleanupLegacyTemplateStores(s);
-    // Restore localStorage stores from extensionSettings backup if localStorage was wiped
+    // Server-saved extension settings are the source of truth. localStorage is a
+    // cache and migration source for installs that predate server-backed stores.
     const restoreTargets = [
         { localKey: "qig_char_settings", backupKey: "_backupCharSettings", setter: v => { charSettings = v; } },
         { localKey: "qig_profiles", backupKey: "_backupProfiles", setter: v => { connectionProfiles = v; } },
@@ -2678,8 +2857,6 @@ async function loadSettings() {
     for (const { localKey, backupKey, setter } of restoreTargets) {
         const localVal = localStorage.getItem(localKey);
         const backupVal = s[backupKey];
-        if (backupVal == null) continue;
-
         let parsedLocal;
         let hasParsableLocal = false;
         if (localVal != null) {
@@ -2691,15 +2868,21 @@ async function loadSettings() {
             }
         }
 
+        if (backupVal == null) {
+            if (hasParsableLocal) backupToSettings(localKey, parsedLocal);
+            continue;
+        }
+
         const expectsArray = Array.isArray(backupVal);
         const expectsObject = !expectsArray && typeof backupVal === "object" && backupVal !== null;
         const typeMismatch = hasParsableLocal && (
             (expectsArray && !Array.isArray(parsedLocal)) ||
             (expectsObject && (typeof parsedLocal !== "object" || parsedLocal === null || Array.isArray(parsedLocal)))
         );
+        const cacheDiffers = !hasParsableLocal || JSON.stringify(parsedLocal) !== JSON.stringify(backupVal);
 
-        if (localVal == null || !hasParsableLocal || typeMismatch) {
-            setter(backupVal);
+        setter(backupVal);
+        if (localVal == null || typeMismatch || cacheDiffers) {
             safeSetStorage(localKey, JSON.stringify(backupVal));
             restoredCount++;
         }
@@ -3339,6 +3522,15 @@ function prependVisualIdentity(visualIdentity, cardDescription) {
     if (!visual) return card;
     if (!card) return `Visual identity override: ${visual}`;
     return `Visual identity override: ${visual}\nCard description: ${card}`;
+}
+
+function applyCurrentVisualIdentityToPrompt(prompt) {
+    const identity = String(getSettings()?.visualIdentity || "").trim();
+    const text = String(prompt || "").trim();
+    if (!identity) return text;
+    const identityPreview = identity.slice(0, 80).toLowerCase();
+    if (identityPreview && text.toLowerCase().includes(identityPreview)) return text;
+    return [`Character visual identity: ${identity}`, text].filter(Boolean).join(". ");
 }
 
 function getCurrentCharacterEntry(ctx = getContext()) {
@@ -5920,6 +6112,75 @@ async function genNanobanana(prompt, negative, s, signal) {
     throw new Error("No image in response");
 }
 
+async function getImageSourceBlob(source, signal) {
+    const url = String(source || "").trim();
+    if (!url) throw new Error("No image source was provided");
+    const isDataLike = url.startsWith("data:") || url.startsWith("blob:");
+    const res = isDataLike ? await fetch(url, { signal }) : await corsFetch(url, { signal });
+    if (!res.ok) throw new Error(`Could not fetch image source (${res.status})`);
+    const blob = await res.blob();
+    if (!String(blob.type || "").startsWith("image/")) {
+        throw new Error("Image source did not return an image file");
+    }
+    return blob;
+}
+
+async function blobToDataUrl(blob) {
+    return await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(reader.error || new Error("Could not read image data"));
+        reader.readAsDataURL(blob);
+    });
+}
+
+function getBlobImageExtension(blob) {
+    const mime = String(blob?.type || "").toLowerCase();
+    if (mime.includes("webp")) return "webp";
+    if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
+    if (mime.includes("gif")) return "gif";
+    return "png";
+}
+
+function getComfyUploadedImageValue(uploadData, fallbackName) {
+    const name = String(uploadData?.name || fallbackName || "").trim();
+    const subfolder = String(uploadData?.subfolder || "").trim().replace(/^[/\\]+|[/\\]+$/g, "");
+    return subfolder ? `${subfolder}/${name}` : name;
+}
+
+async function uploadComfyReferenceImage(baseUrl, referenceSource, signal) {
+    const blob = await getImageSourceBlob(referenceSource, signal);
+    const filename = `imguwu_reference_${Date.now()}.${getBlobImageExtension(blob)}`;
+    const formData = new FormData();
+    formData.append("image", blob, filename);
+    formData.append("type", "input");
+    formData.append("overwrite", "true");
+    const uploadRes = await corsFetch(`${baseUrl}/upload/image`, {
+        method: "POST",
+        body: formData,
+        signal,
+    });
+    if (!uploadRes.ok) {
+        throw new Error(`ComfyUI reference upload failed (${uploadRes.status})`);
+    }
+    const uploadData = await uploadRes.json().catch(() => ({}));
+    const imageValue = getComfyUploadedImageValue(uploadData, filename);
+    if (!imageValue) throw new Error("ComfyUI reference upload returned no image name");
+    log(`ComfyUI: Uploaded SillyTavern reference image as "${imageValue}"`);
+    return imageValue;
+}
+
+function bindComfyReferenceLoadImages(workflow, uploadedReferenceImage) {
+    if (!uploadedReferenceImage || !workflow || typeof workflow !== "object") return 0;
+    let bound = 0;
+    for (const node of Object.values(workflow)) {
+        if (node?.class_type !== "LoadImage" || !node.inputs || typeof node.inputs.image !== "string") continue;
+        node.inputs.image = uploadedReferenceImage;
+        bound++;
+    }
+    return bound;
+}
+
 async function genLocal(prompt, negative, s, signal) {
     const baseUrl = s.localUrl.replace(/\/$/, "");
 
@@ -5963,7 +6224,9 @@ async function genLocal(prompt, negative, s, signal) {
                         const output = result.outputs[nodeId];
                         if (output.images?.[0]) {
                             const img = output.images[0];
-                            return `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || "")}&type=${img.type || "output"}`;
+                            const imageUrl = `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || "")}&type=${img.type || "output"}`;
+                            const imageBlob = await getImageSourceBlob(imageUrl, signal);
+                            return await blobToDataUrl(imageBlob);
                         }
                     }
                 }
@@ -5994,30 +6257,10 @@ async function genLocal(prompt, negative, s, signal) {
 
             if (customWorkflow && typeof customWorkflow === "object" && !Array.isArray(customWorkflow)) {
 
-                // Upload reference image for %reference_image% placeholder
+                // Pull the ST/card/upload reference into ComfyUI input storage.
                 let uploadedRefName = '';
                 if (s.localRefImage) {
-                    try {
-                        const imgData = s.localRefImage.replace(/^data:image\/.+;base64,/, '');
-                        const blob = await (await fetch(`data:image/png;base64,${imgData}`)).blob();
-                        const formData = new FormData();
-                        formData.append("image", blob, "qig_ref.png");
-                        formData.append("overwrite", "true");
-                        const uploadRes = await corsFetch(`${baseUrl}/upload/image`, {
-                            method: "POST",
-                            body: formData,
-                            signal
-                        });
-                        if (uploadRes.ok) {
-                            const uploadData = await uploadRes.json();
-                            uploadedRefName = uploadData.name || "qig_ref.png";
-                            log(`ComfyUI: Uploaded reference image as "${uploadedRefName}"`);
-                        } else {
-                            log(`ComfyUI: Failed to upload reference image (${uploadRes.status})`);
-                        }
-                    } catch (uploadErr) {
-                        log(`ComfyUI: Reference image upload error: ${uploadErr.message}`);
-                    }
+                    uploadedRefName = await uploadComfyReferenceImage(baseUrl, s.localRefImage, signal);
                 }
 
                 // Replace placeholders like sd-proxy does
@@ -6068,6 +6311,14 @@ async function genLocal(prompt, negative, s, signal) {
                     }
                 };
                 replaceInObj(customWorkflow);
+                const boundReferenceLoadImages = bindComfyReferenceLoadImages(customWorkflow, uploadedRefName);
+                if (boundReferenceLoadImages) {
+                    log(`ComfyUI: Bound ${boundReferenceLoadImages} LoadImage node(s) to uploaded SillyTavern reference image`);
+                }
+                const injectedApiWorkflowLoras = injectComfyLorasIntoApiWorkflow(customWorkflow, s.comfyLoras);
+                if (injectedApiWorkflowLoras) {
+                    log(`ComfyUI: Injected ${injectedApiWorkflowLoras} LoRA(s) into API workflow loaders`);
+                }
 
                 log(`ComfyUI: Using ${customWorkflowJson ? "custom" : shouldUseZImageBuiltin ? "built-in Z-Image Turbo" : "built-in Flux.2 Klein reference"} workflow with ${Object.keys(customWorkflow).length} nodes`);
 
@@ -6222,41 +6473,24 @@ async function genLocal(prompt, negative, s, signal) {
 
         // img2img: swap EmptyLatentImage for LoadImage + VAEEncode when reference image present
         if (s.localRefImage && denoise < 1.0) {
-            // Upload image to ComfyUI
-            const imgData = s.localRefImage.replace(/^data:image\/.+;base64,/, '');
-            const blob = await (await fetch(`data:image/png;base64,${imgData}`)).blob();
-            const formData = new FormData();
-            formData.append("image", blob, "qig_ref.png");
-            formData.append("overwrite", "true");
             try {
-                const uploadRes = await corsFetch(`${baseUrl}/upload/image`, {
-                    method: "POST",
-                    body: formData,
-                    signal
-                });
-                if (uploadRes.ok) {
-                    const uploadData = await uploadRes.json();
-                    const uploadedName = uploadData.name || "qig_ref.png";
-
-                    // Replace EmptyLatentImage (node 5) with LoadImage
-                    workflowNodes["5"] = {
-                        class_type: "LoadImage",
-                        inputs: { image: uploadedName }
-                    };
-                    // Add VAEEncode node (node 15) to encode the loaded image to latent
-                    const vaeRef = fluxMode ? ["13", 0] : ["4", 2];
-                    workflowNodes["15"] = {
-                        class_type: "VAEEncode",
-                        inputs: { pixels: ["5", 0], vae: vaeRef }
-                    };
-                    // Rewire KSampler latent_image to VAEEncode output
-                    workflowNodes["3"].inputs.latent_image = ["15", 0];
-                    log(`ComfyUI: img2img mode — uploaded reference image as "${uploadedName}", denoise=${denoise}`);
-                } else {
-                    log(`ComfyUI: Failed to upload reference image (${uploadRes.status}), falling back to txt2img`);
-                }
+                const uploadedName = await uploadComfyReferenceImage(baseUrl, s.localRefImage, signal);
+                // Replace EmptyLatentImage (node 5) with LoadImage
+                workflowNodes["5"] = {
+                    class_type: "LoadImage",
+                    inputs: { image: uploadedName }
+                };
+                // Add VAEEncode node (node 15) to encode the loaded image to latent
+                const vaeRef = fluxMode ? ["13", 0] : ["4", 2];
+                workflowNodes["15"] = {
+                    class_type: "VAEEncode",
+                    inputs: { pixels: ["5", 0], vae: vaeRef }
+                };
+                // Rewire KSampler latent_image to VAEEncode output
+                workflowNodes["3"].inputs.latent_image = ["15", 0];
+                log(`ComfyUI: img2img mode uses uploaded SillyTavern reference image "${uploadedName}", denoise=${denoise}`);
             } catch (uploadErr) {
-                log(`ComfyUI: Image upload error: ${uploadErr.message}, falling back to txt2img`);
+                throw new Error(`ComfyUI img2img reference upload failed: ${uploadErr.message}`);
             }
         }
 
@@ -9976,6 +10210,108 @@ ${cardContext}`;
     }
 }
 
+function getCurrentExpressionSpriteFolderName(entry = getCurrentCharacterEntry()) {
+    const baseName = String(entry?.name || entry?.data?.name || getCurrentCharName() || "").trim();
+    const avatarName = String(entry?.avatar || entry?.data?.avatar || "").replace(/\.[^/.]+$/, "");
+    const override = extension_settings?.expressionOverrides?.find?.(item => item?.name === avatarName);
+    return String(override?.path || baseName).trim();
+}
+
+function parseExpressionLabels(value) {
+    return uniqueStringList(String(value || "")
+        .split(/[\n,]/)
+        .map(label => label.trim().toLowerCase())
+        .filter(label => /^[a-z0-9][a-z0-9 _-]{0,60}$/i.test(label)));
+}
+
+function buildExpressionPrompt(label, settings = getSettings()) {
+    const entry = getCurrentCharacterEntry();
+    const characterName = String(entry?.name || entry?.data?.name || "character").trim();
+    const identity = String(settings?.visualIdentity || "").trim()
+        || truncateForContext(entry?.data?.description, 800)
+        || "preserve the current character appearance";
+    const template = String(settings?.comfyExpressionPromptTemplate || defaultSettings.comfyExpressionPromptTemplate);
+    return template
+        .replace(/\{\{char\}\}/gi, characterName)
+        .replace(/\{\{identity\}\}/gi, identity)
+        .replace(/\{\{expression\}\}/gi, label);
+}
+
+async function getGeneratedImageBlob(imageUrl, signal) {
+    const res = String(imageUrl || "").startsWith("data:")
+        ? await fetch(imageUrl, { signal })
+        : await corsFetch(imageUrl, { signal });
+    if (!res.ok) throw new Error(`Could not read generated image (${res.status})`);
+    return await res.blob();
+}
+
+async function uploadExpressionSprite(imageUrl, label, spriteFolderName, signal) {
+    const blob = await getGeneratedImageBlob(imageUrl, signal);
+    const extension = blob.type === "image/webp" ? "webp" : blob.type === "image/jpeg" ? "jpg" : "png";
+    const formData = new FormData();
+    formData.append("name", spriteFolderName);
+    formData.append("label", label);
+    formData.append("spriteName", label);
+    formData.append("avatar", new File([blob], `${label}.${extension}`, { type: blob.type || "image/png" }));
+    const res = await fetch("/api/sprites/upload", {
+        method: "POST",
+        headers: typeof getRequestHeaders === "function" ? getRequestHeaders() : {},
+        body: formData,
+        signal,
+    });
+    if (!res.ok) throw new Error(`SillyTavern sprite upload failed for ${label} (${res.status})`);
+}
+
+async function generateComfyExpressionSprites() {
+    if (isGenerating) return;
+    const s = getSettings();
+    const spriteFolderName = getCurrentExpressionSpriteFolderName();
+    const labels = parseExpressionLabels(s.comfyExpressionLabels);
+    if (s.provider !== "local" || s.localType !== "comfyui") {
+        toastr.warning("Expression sprites use the active ComfyUI local provider");
+        return;
+    }
+    if (!spriteFolderName) {
+        toastr.warning("Open a character chat before generating expression sprites");
+        return;
+    }
+    if (!labels.length) {
+        toastr.warning("Add at least one expression label");
+        return;
+    }
+    if (s.confirmBeforeGenerate && !confirm(`Generate and upload ${labels.length} expression sprite(s)?`)) return;
+
+    beginGeneration({ disableGenerateButton: true, clearPendingAuto: true });
+    const originalSeed = getGenerationSeedValue(s);
+    const uploaded = [];
+    try {
+        for (let i = 0; i < labels.length; i++) {
+            checkAborted(getCancelCheckpoint());
+            const label = labels[i];
+            showStatus(`Generating expression ${i + 1}/${labels.length}: ${label}`);
+            setGenerationSeedValue(s, -1);
+            const prompt = applyStyle(buildExpressionPrompt(label, s), s);
+            const imageUrl = await generateForProvider(expandWildcards(prompt), expandWildcards(resolvePrompt(s.negativePrompt)), s, currentAbortController?.signal);
+            await uploadExpressionSprite(imageUrl, label, spriteFolderName, currentAbortController?.signal);
+            uploaded.push(label);
+        }
+        toastr.success(`Uploaded ${uploaded.length} expression sprite${uploaded.length === 1 ? "" : "s"} for ${spriteFolderName}`);
+        showStatus(`Uploaded expressions: ${uploaded.join(", ")}`);
+        setTimeout(hideStatus, 2400);
+    } catch (e) {
+        if (e.name === "AbortError") {
+            toastr.info("Expression generation cancelled");
+        } else {
+            log(`Expression sprite generation failed: ${e.message}`);
+            toastr.error("Expression generation failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true });
+        }
+        hideStatus();
+    } finally {
+        setGenerationSeedValue(s, originalSeed);
+        endGeneration({ disableGenerateButton: true });
+    }
+}
+
 function loadCharSettings() {
     const s = getSettings();
     const charId = getCurrentCharId();
@@ -11223,7 +11559,13 @@ function createUI() {
                     <button id="qig-logs-btn" class="menu_button" title="View generation logs and errors"><span class="fa-solid fa-list-check"></span><span>Logs</span></button>
                 </div>
 
-                <section class="qig-menu-section" aria-labelledby="qig-character-identity-heading">
+                <nav class="qig-settings-tabs" aria-label="imguwu settings views">
+                    <button type="button" class="menu_button qig-settings-tab is-active" data-qig-tab-button="character" aria-selected="true"><span class="fa-solid fa-user"></span><span>Character</span></button>
+                    <button type="button" class="menu_button qig-settings-tab" data-qig-tab-button="generate" aria-selected="false"><span class="fa-solid fa-sliders"></span><span>Generate</span></button>
+                    <button type="button" class="menu_button qig-settings-tab" data-qig-tab-button="automation" aria-selected="false"><span class="fa-solid fa-bolt"></span><span>Automation</span></button>
+                </nav>
+
+                <section class="qig-menu-section" data-qig-tab-panel="character" aria-labelledby="qig-character-identity-heading">
                     <div class="qig-section-header">
                         <div>
                             <span id="qig-character-identity-heading" class="qig-section-kicker">Character Identity</span>
@@ -11247,11 +11589,24 @@ function createUI() {
                         <small>Use the card image or upload a clearer face-forward reference. Save Char persists uploads for this character.</small>
                     </div>
                     <div class="qig-action-strip">
-                        <button id="qig-extract-visual-identity" class="menu_button" title="Ask the active text model to extract reusable appearance text from this card"><span class="fa-solid fa-wand-magic-sparkles"></span><span>Extract From Card</span></button>
+                        <button id="qig-extract-visual-identity" class="menu_button" title="Ask the active text model to generate reusable appearance text from the character description"><span class="fa-solid fa-wand-magic-sparkles"></span><span>Generate Identity</span></button>
+                    </div>
+                    <div class="qig-expression-panel">
+                        <div class="qig-card-title">Expression Sprites</div>
+                        <div class="qig-field">
+                            <label for="qig-comfy-expression-labels">Labels</label>
+                            <input id="qig-comfy-expression-labels" type="text" value="${esc(s.comfyExpressionLabels || defaultSettings.comfyExpressionLabels)}" placeholder="neutral, joy, anger">
+                        </div>
+                        <div class="qig-field">
+                            <label for="qig-comfy-expression-template">ComfyUI prompt template</label>
+                            <textarea id="qig-comfy-expression-template" rows="3">${esc(s.comfyExpressionPromptTemplate || defaultSettings.comfyExpressionPromptTemplate)}</textarea>
+                            <small>Uses the active ComfyUI workflow. Template variables: {{char}}, {{identity}}, {{expression}}.</small>
+                        </div>
+                        <button id="qig-comfy-expression-generate" class="menu_button qig-inline-action" title="Generate selected expression labels through ComfyUI and upload them as SillyTavern sprites"><span class="fa-solid fa-face-smile"></span><span>Generate Expressions</span></button>
                     </div>
                 </section>
 
-                <section class="qig-menu-section qig-menu-section--connection" aria-labelledby="qig-connection-heading">
+                <section class="qig-menu-section qig-menu-section--connection" data-qig-tab-panel="generate" aria-labelledby="qig-connection-heading" hidden>
                     <div class="qig-section-header">
                         <div>
                             <span id="qig-connection-heading" class="qig-section-kicker">Connection</span>
@@ -11568,9 +11923,17 @@ function createUI() {
                             <input id="qig-comfy-flux-vae" type="text" value="${esc(s.comfyFluxVaeModel || "")}" placeholder="ae.safetensors">
                             <small style="opacity:0.6;font-size:10px;">From models/vae/. Required for UNET-only models.</small>
                          </div>
-                         <label>LoRAs (filename:weight, comma-separated)</label>
-                         <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters. Filename must match your ComfyUI loras folder.</small>
-                         <input id="qig-comfy-loras" type="text" value="${esc(s.comfyLoras || "")}" placeholder="my_lora.safetensors:0.8, style_lora.safetensors:0.6">
+                         <label>LoRA Manager</label>
+                         <small style="opacity:0.6;font-size:10px;">Enabled LoRAs are saved with ComfyUI settings and used by standard loader-compatible workflows.</small>
+                         <input id="qig-comfy-loras" type="hidden" value="${esc(s.comfyLoras || "")}">
+                         <div class="qig-lora-manager">
+                            <div class="qig-inline-control">
+                                <input id="qig-comfy-lora-add-name" class="qig-inline-control__main" type="text" placeholder="Add filename from models/loras">
+                                <button id="qig-comfy-lora-add" class="menu_button" type="button" title="Add LoRA filename"><span class="fa-solid fa-plus"></span></button>
+                                <button id="qig-comfy-lora-refresh" class="menu_button" type="button" title="Refresh LoRA files from ComfyUI"><span class="fa-solid fa-rotate"></span><span>Files</span></button>
+                            </div>
+                            <div id="qig-comfy-lora-list"></div>
+                         </div>
                          <label>Workflow Preset</label>
                          <button id="qig-comfy-flux2-character-workflow" class="menu_button qig-inline-action" title="Load the Flux.2 Klein character-reference workflow and recommended settings"><span class="fa-solid fa-user-astronaut"></span><span>Use Flux.2 Klein Character Workflow</span></button>
                          <button id="qig-comfy-zimage-workflow" class="menu_button qig-inline-action" title="Use the built-in Z-Image Turbo workflow and recommended text-generation settings"><span class="fa-solid fa-wand-sparkles"></span><span>Use Z-Image Turbo Workflow</span></button>
@@ -11960,7 +12323,7 @@ function createUI() {
                     </div>
                 </section>
 
-                <section class="qig-menu-section qig-menu-section--prompt" aria-labelledby="qig-prompt-heading">
+                <section class="qig-menu-section qig-menu-section--prompt" data-qig-tab-panel="generate" aria-labelledby="qig-prompt-heading" hidden>
                     <div class="qig-section-header">
                         <div>
                             <span id="qig-prompt-heading" class="qig-section-kicker">Prompt</span>
@@ -12068,7 +12431,7 @@ function createUI() {
                     </div>
                 </section>
 
-                <section class="qig-menu-section" aria-labelledby="qig-context-heading">
+                <section class="qig-menu-section" data-qig-tab-panel="generate" aria-labelledby="qig-context-heading" hidden>
                     <div class="qig-section-header">
                         <div>
                             <span id="qig-context-heading" class="qig-section-kicker">Context</span>
@@ -12087,7 +12450,7 @@ function createUI() {
                     </div>
                 </section>
 
-                <section class="qig-menu-section" aria-labelledby="qig-automation-heading">
+                <section class="qig-menu-section" data-qig-tab-panel="automation" aria-labelledby="qig-automation-heading" hidden>
                     <div class="qig-section-header">
                         <div>
                             <span id="qig-automation-heading" class="qig-section-kicker">Automation</span>
@@ -12180,7 +12543,7 @@ function createUI() {
                 </div>
                 </section>
 
-                <section class="qig-menu-section" aria-labelledby="qig-output-heading">
+                <section class="qig-menu-section" data-qig-tab-panel="generate" aria-labelledby="qig-output-heading" hidden>
                     <div class="qig-section-header">
                         <div>
                             <span id="qig-output-heading" class="qig-section-kicker">Output</span>
@@ -12290,6 +12653,7 @@ function createUI() {
     document.getElementById("qig-logs-btn").onclick = showLogs;
     document.getElementById("qig-save-char-btn").onclick = saveCharSettings;
     document.getElementById("qig-extract-visual-identity").onclick = generateCharacterVisualIdentity;
+    document.getElementById("qig-comfy-expression-generate").onclick = generateComfyExpressionSprites;
     document.getElementById("qig-local-ref-card-btn").onclick = useCurrentCardAsReferenceImage;
     document.getElementById("qig-gallery-settings-btn").onclick = showGallery;
     document.getElementById("qig-prompt-history-btn").onclick = showPromptHistory;
@@ -12306,6 +12670,7 @@ function createUI() {
     setupQigCollapsibleSection("promptAdvanced", "qig-prompt-advanced-toggle", "qig-prompt-advanced-content");
     setupQigCollapsibleSection("injectOptions", "qig-inject-options-toggle", "qig-inject-options");
     setupQigCollapsibleSection("advancedSettings", "qig-advanced-settings-toggle", "qig-advanced-settings");
+    setupQigSettingsTabs();
     bindQigKeyboardShortcuts();
     renderPresets();
     renderProfileSelect();
@@ -12313,6 +12678,7 @@ function createUI() {
     renderContextualFilters();
     document.getElementById("qig-comfy-flux2-character-workflow").onclick = applyFlux2KleinCharacterWorkflow;
     document.getElementById("qig-comfy-zimage-workflow").onclick = applyZImageTurboWorkflow;
+    renderComfyLoraManager();
 
     document.getElementById("qig-provider").onchange = (e) => {
         getSettings().provider = e.target.value;
@@ -12456,7 +12822,28 @@ function createUI() {
         document.getElementById("qig-comfy-upscale-opts").style.display = e.target.checked ? "block" : "none";
     };
     bind("qig-comfy-workflow", "comfyWorkflow");
-    bind("qig-comfy-loras", "comfyLoras");
+    bind("qig-comfy-expression-labels", "comfyExpressionLabels");
+    bind("qig-comfy-expression-template", "comfyExpressionPromptTemplate");
+    document.getElementById("qig-comfy-lora-add").onclick = addManualComfyLora;
+    document.getElementById("qig-comfy-lora-add-name").onkeydown = e => {
+        if (e.key === "Enter") {
+            e.preventDefault();
+            addManualComfyLora();
+        }
+    };
+    document.getElementById("qig-comfy-lora-refresh").onclick = async () => {
+        const button = document.getElementById("qig-comfy-lora-refresh");
+        if (button) button.disabled = true;
+        try {
+            comfyLoraFilesCache = await fetchComfyUILoras(getSettings().localUrl);
+            renderComfyLoraManager();
+            toastr.info(`Loaded ${comfyLoraFilesCache.length} LoRA file${comfyLoraFilesCache.length === 1 ? "" : "s"} from ComfyUI`);
+        } catch (e) {
+            toastr.error(e.message, "ComfyUI LoRA refresh failed");
+        } finally {
+            if (button) button.disabled = false;
+        }
+    };
     document.getElementById("qig-comfy-skip-neg").onchange = (e) => {
         getSettings().comfySkipNegativePrompt = e.target.checked;
         saveSettingsDebounced();
@@ -13702,7 +14089,7 @@ async function generateImageFromPlainDescription() {
             }
         }
 
-        prompt = applyStyle(prompt, s);
+        prompt = applyCurrentVisualIdentityToPrompt(applyStyle(prompt, s));
 
         if (s.appendQuality && s.qualityTags) {
             prompt = `${s.qualityTags}, ${prompt}`;
@@ -13882,7 +14269,7 @@ async function generateImage() {
         }
     }
 
-    prompt = applyStyle(prompt, s);
+    prompt = applyCurrentVisualIdentityToPrompt(applyStyle(prompt, s));
 
     if (s.appendQuality && s.qualityTags) {
         prompt = `${s.qualityTags}, ${prompt}`;

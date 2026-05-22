@@ -158,7 +158,7 @@
     font-size: 9px;
     font-weight: 800;
     line-height: 1.2;
-    letter-spacing: 0.04em;
+    letter-spacing: 0;
     text-transform: uppercase;
     color: var(--qig-text-soft);
 }
@@ -231,6 +231,28 @@
     white-space: normal;
 }
 
+.qig-settings-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+}
+
+#qig-settings .qig-settings-tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 6px;
+    color: var(--qig-text-soft);
+}
+
+#qig-settings .qig-settings-tab.is-active {
+    border-color: var(--qig-accent);
+    color: var(--SmartThemeBodyColor);
+    background: color-mix(in srgb, var(--qig-accent) 18%, var(--qig-surface-soft));
+}
+
 .qig-menu-section {
     padding: 14px;
     border: 1px solid var(--qig-line);
@@ -299,6 +321,64 @@
     border: 1px solid var(--qig-line);
     border-radius: 7px;
     background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 78%, transparent);
+}
+
+.qig-expression-panel,
+.qig-lora-manager {
+    display: grid;
+    gap: 8px;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--qig-line);
+}
+
+.qig-lora-manager .qig-inline-control {
+    align-items: center;
+}
+
+.qig-lora-manager .qig-inline-control > input {
+    margin-top: 0;
+}
+
+.qig-lora-manager .menu_button {
+    flex: 0 0 auto;
+}
+
+#qig-comfy-lora-list {
+    display: grid;
+    gap: 6px;
+}
+
+.qig-lora-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 74px 36px;
+    gap: 6px;
+    align-items: center;
+    min-width: 0;
+}
+
+.qig-lora-row .checkbox_label {
+    min-width: 0;
+    margin: 0;
+}
+
+.qig-lora-row .checkbox_label span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.qig-lora-row input.qig-comfy-lora-weight {
+    min-width: 0;
+    margin-top: 0;
+}
+
+#qig-settings .qig-lora-row .qig-comfy-lora-remove {
+    width: 36px;
+    min-width: 36px;
+    min-height: 34px;
+    padding: 0;
 }
 
 .qig-collapsible {

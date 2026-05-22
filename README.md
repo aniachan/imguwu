@@ -22,8 +22,8 @@ start ComfyUI with CORS enabled for your SillyTavern origin.
 
 ## Character Setup
 
-Open a character chat and expand the `imguwu` panel. The panel is split into
-Character, Generate, and Automation tabs.
+Open a character chat and click the imguwu image button beside the chat input.
+It opens a full workspace split into Character, Generate, and Automation tabs.
 
 1. In `Character Identity`, click `Use Card Image` to copy the current card
    image into the character reference slot, or `Upload Reference` to use a
@@ -56,6 +56,10 @@ Use the prompt controls with chat context and LLM prompt generation enabled to
 turn the active roleplay situation into a natural image prompt. The generated
 prompt receives the character visual identity and the relevant chat scene
 before it reaches ComfyUI.
+
+Prompt conversion is deliberately visual-only: dialogue, chat prose, and inner
+thoughts are turned into visible subjects, poses, expressions, setting,
+lighting, and composition before the image backend sees the prompt.
 
 ## Expression Sprites
 

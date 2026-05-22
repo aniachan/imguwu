@@ -5234,6 +5234,8 @@ CRITICAL INSTRUCTIONS:
 - IGNORE any ambient chat history outside the selected scene below
 - Generate ONLY a new image prompt based on the selected scene below
 - DO NOT repeat or paraphrase the scene text verbatim
+- DO NOT write roleplay narration, dialogue, quoted speech, inner thoughts, chat prose, or a story continuation
+- Convert actions and dialogue into visible image details: subjects, appearance, pose, expression, camera, setting, lighting, and atmosphere
 - This is a standalone task, not a continuation of chat
 ${multiMessageContextBlock}
 
@@ -5285,6 +5287,8 @@ CRITICAL - THIS IS NOT A CONTINUATION OF CHAT:
 - IGNORE any ambient chat history outside the selected scene below
 - Generate a FRESH image prompt based ONLY on the selected scene below
 - DO NOT repeat or paraphrase the scene text verbatim
+- DO NOT output roleplay narration, dialogue, quoted speech, inner thoughts, chat prose, or a story continuation
+- Convert actions and dialogue into visible image tags only
 - This is a standalone generation task
 ${multiMessageContextBlock}
 
@@ -5389,7 +5393,7 @@ Tags:`;
             log(`WARNING: ${warningMessage}`);
             logLLMHelperResponseMeta(helperResponseMeta, "LLM helper empty response");
             toastr.warning(warningMessage, "Image Gen", { timeOut: 5000 });
-            return basePrompt;
+            cleaned = await generateVisualPromptRecovery(basePrompt, s, signal);
         }
 
         // Strip only meta-label prefills; preserve character-name prefills so filters can still key off them.
@@ -5400,50 +5404,78 @@ Tags:`;
 
         // CRITICAL: Check if response looks like roleplay dialogue (indicates LLM used chat context)
         // Roleplay dialogue typically has dialogue markers, quotation marks, or narrative text
-        const looksLikeRoleplay = /["'"].*\s["']|said:|thought:|thought\s*:|^[A-Z][a-z]+\s+(?:nods|smiles|frowns|laughs|gasps)/i.test(cleaned);
+        const looksLikeRoleplay = isLikelyRoleplayPrompt(cleaned);
 
         if (looksLikeRoleplay) {
             log("⚠️ WARNING: Response appears to be roleplay dialogue, not an image prompt!");
             log("This indicates LLM used chat context despite our instructions.");
 
-            // Force a minimal, literal instruction as fallback
-            log("Attempting literal fallback instruction...");
-            cleaned = await generateLiteralFallback(basePrompt);
+            log("Attempting visual prompt recovery...");
+            cleaned = await generateVisualPromptRecovery(basePrompt, s, signal);
         }
 
-        return cleaned || basePrompt;
+        return cleaned || buildVisualPromptFallback(basePrompt);
     } catch (e) {
         if (e.name === "AbortError") throw e;
         log(`LLM prompt failed: ${e.message}`);
         toastr.warning(`LLM prompt failed: ${e.message}`, "Image Gen", { timeOut: 5000 });
-        return basePrompt;
+        return buildVisualPromptFallback(basePrompt);
     }
 }
 
-async function generateLiteralFallback(originalInstruction) {
+function isLikelyRoleplayPrompt(value) {
+    const text = String(value || "").trim();
+    if (!text) return true;
+    const quotedDialogue = /(?:^|\s)["“][^"”]{4,}["”]/m.test(text);
+    const roleplayActions = /(?:^|\n)\s*\*[^*\n]{3,}\*|(?:^|\n)\s*[A-Z][^:\n]{0,40}:\s*(?:["“*]|[A-Z])/m.test(text);
+    const narrativeContinuation = /\b(?:says|said|whispers|replies|thinks|thought|asks|answers)\b.{0,50}(?:["“]|that\b)/i.test(text);
+    const turns = /\b(?:{{char}}|{{user}}|assistant|user)\s*:/i.test(text);
+    return quotedDialogue || roleplayActions || narrativeContinuation || turns;
+}
+
+function buildVisualPromptFallback(scene) {
+    const visualScene = String(scene || "")
+        .replace(/(?:^|\n)\s*[^:\n]{1,48}:\s*/g, " ")
+        .replace(/["“”]/g, "")
+        .replace(/\*([^*]+)\*/g, "$1")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 1200);
+    return `Image prompt: visible scene illustration, ${visualScene || "the current scene"}, clear subjects, character appearance, pose, facial expression, setting, lighting, composition`;
+}
+
+async function generateVisualPromptRecovery(scene, settings, signal) {
+    const s = settings || getSettings();
+    const timestamp = Date.now();
+    const recoveryInstruction = `[IMAGE PROMPT REPAIR TASK]
+Convert the scene below into a usable image-generation prompt.
+
+Output ONLY visual prompt text. Do not continue roleplay. Do not quote dialogue.
+Describe only what can be seen in one image: subjects, appearance, clothing, action, pose, expression, setting, composition, lighting, atmosphere.
+If dialogue or thoughts imply emotion, turn that into visible facial expression and body language.
+
+SCENE:
+${truncateForContext(scene, 3600)}
+
+IMAGE PROMPT:`;
     try {
-        // This is a last resort: we extract just the scene/action from the instruction
-        // and return it as-is without LLM processing
-        log("Using literal fallback to avoid chat context issues");
-
-        // Extract scene/action part by looking for common patterns
-        let extracted = originalInstruction;
-
-        // Remove instruction headers if present
-        extracted = extracted.replace(/^###.*?###\s*/g, '');
-        extracted = extracted.replace(/CRITICAL.*?\n*/gi, '');
-        extracted = extracted.replace(/Create.*?for\s+this\s+scene:/gi, '');
-        extracted = extracted.replace(/Scene:\s*/gi, '');
-
-        // Clean up but keep essence
-        extracted = extracted.replace(/\n\n+/g, '\n').trim();
-
-        log(`Literal fallback extracted: ${extracted.substring(0, 100)}...`);
-        return extracted;
+        const result = s.llmOverrideEnabled && s.llmOverrideProfileId
+            ? await callOverrideLLM(`[${timestamp}]\n${recoveryInstruction}`, "", signal, { returnMeta: false })
+            : await callInternalStandaloneLLM(`[${timestamp}]\n${recoveryInstruction}`, {
+                signal,
+                quietName: `ImageGenRepair_${timestamp}`,
+                label: "image prompt repair request",
+            });
+        const cleaned = String(result || "")
+            .replace(/\[\d+\]\s*/g, "")
+            .replace(/^image prompt\s*:\s*/i, "")
+            .trim();
+        if (cleaned && !isLikelyRoleplayPrompt(cleaned)) return cleaned;
     } catch (e) {
-        log(`Literal fallback failed: ${e.message}`);
-        return originalInstruction;
+        if (e.name === "AbortError") throw e;
+        log(`Visual prompt recovery failed: ${e.message}`);
     }
+    return buildVisualPromptFallback(scene);
 }
 
 async function pollinationsFetchImageData(prompt, negative, s, signal) {
@@ -10403,7 +10435,6 @@ async function generateComfyExpressionSprites() {
 function loadCharSettings() {
     const s = getSettings();
     const charId = getCurrentCharId();
-    if (!document.getElementById("qig-prompt")) return false;
 
     if (charId == null) {
         if (charSettingsBaseState) {
@@ -10436,23 +10467,28 @@ function loadCharSettings() {
     const cs = charSettings[charId] || {};
     if (Object.prototype.hasOwnProperty.call(cs, "prompt")) {
         s.prompt = cs.prompt ?? "";
-        document.getElementById("qig-prompt").value = s.prompt;
+        const promptEl = document.getElementById("qig-prompt");
+        if (promptEl) promptEl.value = s.prompt;
     }
     if (Object.prototype.hasOwnProperty.call(cs, "negativePrompt")) {
         s.negativePrompt = cs.negativePrompt ?? "";
-        document.getElementById("qig-negative").value = s.negativePrompt;
+        const negativeEl = document.getElementById("qig-negative");
+        if (negativeEl) negativeEl.value = s.negativePrompt;
     }
     if (Object.prototype.hasOwnProperty.call(cs, "style")) {
         s.style = cs.style ?? defaultSettings.style;
-        document.getElementById("qig-style").value = s.style;
+        const styleEl = document.getElementById("qig-style");
+        if (styleEl) styleEl.value = s.style;
     }
     if (Object.prototype.hasOwnProperty.call(cs, "width")) {
         s.width = cs.width ?? defaultSettings.width;
-        document.getElementById("qig-width").value = s.width;
+        const widthEl = document.getElementById("qig-width");
+        if (widthEl) widthEl.value = s.width;
     }
     if (Object.prototype.hasOwnProperty.call(cs, "height")) {
         s.height = cs.height ?? defaultSettings.height;
-        document.getElementById("qig-height").value = s.height;
+        const heightEl = document.getElementById("qig-height");
+        if (heightEl) heightEl.value = s.height;
     }
     s.visualIdentity = cs.visualIdentity ?? "";
     const visualIdentityEl = document.getElementById("qig-visual-identity");
@@ -11582,6 +11618,7 @@ function buildOptions(items, selectedValue, labelFn) {
 
 function createUI() {
     clearCache();
+    document.querySelectorAll("#qig-workspace-overlay").forEach(el => el.remove());
     document.querySelectorAll("#qig-settings").forEach(el => el.remove());
     const s = getSettings();
     if (s.provider === "novelai") normalizeSize(s);
@@ -11612,7 +11649,16 @@ function createUI() {
     const activeBatchLabel = `${activeBatchCount} image${activeBatchCount === 1 ? "" : "s"}`;
 
     const html = `
-    <div id="qig-settings" class="qig-settings" role="region" aria-label="imguwu settings">
+    <div id="qig-workspace-overlay" class="qig-workspace-overlay" role="dialog" aria-modal="true" aria-label="imguwu workspace" tabindex="-1">
+    <div class="qig-workspace-shell">
+        <header class="qig-workspace-header">
+            <div>
+                <div class="qig-menu-title">imguwu</div>
+                <small>Character image workspace</small>
+            </div>
+            <button id="qig-workspace-close" class="menu_button" type="button" title="Close imguwu" aria-label="Close imguwu"><span class="fa-solid fa-xmark"></span></button>
+        </header>
+    <div id="qig-settings" class="qig-settings qig-settings--workspace" role="region" aria-label="imguwu settings">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
                 <b>imguwu</b>
@@ -12733,10 +12779,21 @@ function createUI() {
                 </section>
             </div>
         </div>
+    </div>
+    </div>
     </div>`;
 
-    document.getElementById("extensions_settings").insertAdjacentHTML("beforeend", html);
+    document.body.insertAdjacentHTML("beforeend", html);
 
+    document.getElementById("qig-workspace-close").onclick = closeImgUwuWorkspace;
+    const workspaceOverlay = document.getElementById("qig-workspace-overlay");
+    workspaceOverlay.onclick = e => {
+        if (e.target === workspaceOverlay) closeImgUwuWorkspace();
+    };
+    workspaceOverlay.onkeydown = e => {
+        if (e.key === "Escape") closeImgUwuWorkspace();
+    };
+    workspaceOverlay.focus();
     document.getElementById("qig-generate-btn").onclick = () => runConfiguredPaletteGeneration();
     document.getElementById("qig-logs-btn").onclick = showLogs;
     document.getElementById("qig-save-char-btn").onclick = saveCharSettings;
@@ -13893,6 +13950,28 @@ function runConfiguredPaletteGeneration() {
     const mode = normalizePaletteMode(getSettings()?.paletteMode);
     if (mode === "inject") return generateImageInjectPalette();
     return generateImage();
+}
+
+function closeImgUwuWorkspace() {
+    document.getElementById("qig-workspace-overlay")?.remove();
+    clearCache();
+}
+
+function openImgUwuWorkspace() {
+    closePalettePresetMenu();
+    createUI();
+}
+
+function addWorkspaceButton() {
+    if (document.getElementById("qig-workspace-btn")) return;
+    const btn = document.createElement("div");
+    btn.id = "qig-workspace-btn";
+    btn.className = "fa-solid fa-image interactable";
+    btn.title = "Open imguwu workspace";
+    btn.style.cssText = "cursor:pointer;padding:5px;font-size:1.2em;opacity:0.7;";
+    btn.onclick = openImgUwuWorkspace;
+    const leftArea = document.getElementById("leftSendForm") || document.querySelector("#send_form .left_menu_buttons");
+    if (leftArea) leftArea.appendChild(btn);
 }
 
 function addInputButton() {
@@ -15085,8 +15164,8 @@ jQuery(function () {
             }
 
             await loadSettings();
-            createUI();
             addInputButton();
+            addWorkspaceButton();
             bindMessageGenerateActionClicks();
             initMessageGenerateActionObserver();
             loadCharSettings();

@@ -11637,33 +11637,34 @@ function createUI() {
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
-                <nav class="qig-action-bar" aria-label="imguwu primary actions">
-                    <button id="qig-generate-btn" class="menu_button qig-primary-action" title="Generate image with current settings (Ctrl+Enter)" aria-label="Generate image with current settings">
-                        <span class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></span>
-                        <span>Generate</span>
-                        <span class="qig-shortcut-hint">Ctrl+Enter</span>
-                    </button>
-                    <button id="qig-gallery-settings-btn" class="menu_button qig-action-bar__secondary" title="Browse generated images (Ctrl+Shift+G)" aria-label="Open generated image gallery"><span class="fa-solid fa-images" aria-hidden="true"></span><span>Gallery</span></button>
-                    <button id="qig-prompt-history-btn" class="menu_button qig-action-bar__secondary" title="View prompt history (Ctrl+Shift+H)" aria-label="Open prompt history"><span class="fa-solid fa-clock-rotate-left" aria-hidden="true"></span><span>Prompts</span></button>
-                </nav>
-
-                <div class="qig-menu-hero">
-                    <div class="qig-menu-hero__summary">
-                        <span class="qig-menu-eyebrow">Ready to generate</span>
-                        <div class="qig-menu-title">imguwu</div>
-                        <div class="qig-menu-meta">
-                            <span>${esc(activeProviderName)}</span>
-                            <span>${esc(activeStyleName)}</span>
-                            <span>${esc(activeBatchLabel)}</span>
+                <section class="qig-workspace-overview" aria-label="imguwu workspace overview">
+                    <div class="qig-workspace-command">
+                        <nav class="qig-action-bar" aria-label="imguwu primary actions">
+                            <button id="qig-generate-btn" class="menu_button qig-primary-action" title="Generate image with current settings (Ctrl+Enter)" aria-label="Generate image with current settings">
+                                <span class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></span>
+                                <span>Generate</span>
+                                <span class="qig-shortcut-hint">Ctrl+Enter</span>
+                            </button>
+                            <button id="qig-gallery-settings-btn" class="menu_button qig-action-bar__secondary" title="Browse generated images (Ctrl+Shift+G)" aria-label="Open generated image gallery"><span class="fa-solid fa-images" aria-hidden="true"></span><span>Gallery</span></button>
+                            <button id="qig-prompt-history-btn" class="menu_button qig-action-bar__secondary" title="View prompt history (Ctrl+Shift+H)" aria-label="Open prompt history"><span class="fa-solid fa-clock-rotate-left" aria-hidden="true"></span><span>Prompts</span></button>
+                        </nav>
+                        <div class="qig-quick-actions" aria-label="imguwu shortcuts">
+                            <button id="qig-save-char-btn" class="menu_button" title="Save current settings as defaults for this character"><span class="fa-solid fa-user-check"></span><span>Save Char</span></button>
+                            <button id="qig-logs-btn" class="menu_button" title="View generation logs and errors"><span class="fa-solid fa-list-check"></span><span>Logs</span></button>
                         </div>
                     </div>
-                    <div class="qig-hero-note">Set provider and prompt below. Generate stays available while you scroll.</div>
-                </div>
-
-                <div class="qig-quick-actions" aria-label="imguwu shortcuts">
-                    <button id="qig-save-char-btn" class="menu_button" title="Save current settings as defaults for this character"><span class="fa-solid fa-user-check"></span><span>Save Char</span></button>
-                    <button id="qig-logs-btn" class="menu_button" title="View generation logs and errors"><span class="fa-solid fa-list-check"></span><span>Logs</span></button>
-                </div>
+                    <div class="qig-menu-hero">
+                        <div class="qig-menu-hero__summary">
+                            <span class="qig-menu-eyebrow">Current recipe</span>
+                            <div class="qig-menu-title">${esc(activeProviderName)}</div>
+                            <div class="qig-menu-meta">
+                                <span>${esc(activeStyleName)}</span>
+                                <span>${esc(activeBatchLabel)}</span>
+                            </div>
+                        </div>
+                        <div class="qig-hero-note">Character identity and scene controls stay in one workspace.</div>
+                    </div>
+                </section>
 
                 <nav class="qig-settings-tabs" aria-label="imguwu settings views">
                     <button type="button" class="menu_button qig-settings-tab is-active" data-qig-tab-button="character" aria-selected="true"><span class="fa-solid fa-user"></span><span>Character</span></button>
@@ -11685,11 +11686,11 @@ function createUI() {
                     </div>
                     <div class="qig-field">
                         <label>Reference Image</label>
-                        <div style="display:flex;gap:4px;align-items:center;">
-                            <img id="qig-local-ref-preview" src="${esc(s.localRefImage || '')}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;display:${s.localRefImage ? 'block' : 'none'};background:#333;">
+                        <div class="qig-reference-row">
+                            <img id="qig-local-ref-preview" class="qig-reference-preview" src="${esc(s.localRefImage || '')}" style="display:${s.localRefImage ? 'block' : 'none'};">
                             <button id="qig-local-ref-card-btn" class="menu_button" title="Use the current character card image as this character's ComfyUI reference"><span class="fa-solid fa-address-card"></span><span>Use Card Image</span></button>
-                            <button id="qig-local-ref-btn" class="menu_button" style="flex:1;" title="Upload a reference image for this character"><span class="fa-solid fa-paperclip"></span><span>Upload Reference</span></button>
-                            <button id="qig-local-ref-clear" class="menu_button" style="width:30px;color:#e94560;display:${s.localRefImage ? 'block' : 'none'};">×</button>
+                            <button id="qig-local-ref-btn" class="menu_button qig-reference-upload" title="Upload a reference image for this character"><span class="fa-solid fa-paperclip"></span><span>Upload Reference</span></button>
+                            <button id="qig-local-ref-clear" class="menu_button qig-reference-clear" style="display:${s.localRefImage ? 'block' : 'none'};" title="Clear reference image" aria-label="Clear reference image"><span class="fa-solid fa-xmark"></span></button>
                         </div>
                         <input type="file" id="qig-local-ref-input" accept="image/*" style="display:none">
                         <small>Use the card image or upload a clearer face-forward reference. Save Char persists uploads for this character.</small>

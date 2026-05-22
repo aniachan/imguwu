@@ -2195,6 +2195,20 @@ async function replicateFetch(action, payload, signal) {
     throw new Error(`Unknown Replicate relay action: ${action}`);
 }
 
+function getProxyRequestHeaders(opts = {}) {
+    const stHeaders = typeof getRequestHeaders === "function" ? { ...getRequestHeaders() } : {};
+    const requestHeaders = opts.headers ? { ...opts.headers } : {};
+    if (typeof FormData !== "undefined" && opts.body instanceof FormData) {
+        // Let fetch provide the multipart boundary for uploads forwarded by ST.
+        for (const headers of [stHeaders, requestHeaders]) {
+            for (const key of Object.keys(headers)) {
+                if (key.toLowerCase() === "content-type") delete headers[key];
+            }
+        }
+    }
+    return { ...stHeaders, ...requestHeaders };
+}
+
 // CORS-aware fetch: tries direct, falls back to ST's /proxy/ endpoint
 let _corsProxyState = 0; // 0=unknown, 1=direct works, 2=proxy works, -1=proxy disabled, -2=blocked by basicAuth
 async function corsFetch(url, opts = {}) {
@@ -2223,8 +2237,7 @@ async function corsFetch(url, opts = {}) {
     }
     const proxyUrl = `/proxy/${url}`;
     // Merge ST request headers (CSRF token) into proxy requests
-    const stHeaders = typeof getRequestHeaders === 'function' ? getRequestHeaders() : {};
-    const mergedHeaders = { ...stHeaders, ...opts.headers };
+    const mergedHeaders = getProxyRequestHeaders(opts);
     const res = await fetch(proxyUrl, { ...opts, headers: mergedHeaders });
     if (requestHasOwnAuthorization && res.status === 401 && isBasicAuthChallenge(res.headers.get("www-authenticate"))) {
         _corsProxyState = -2;
@@ -6161,7 +6174,8 @@ async function uploadComfyReferenceImage(baseUrl, referenceSource, signal) {
         signal,
     });
     if (!uploadRes.ok) {
-        throw new Error(`ComfyUI reference upload failed (${uploadRes.status})`);
+        const detail = String(await uploadRes.text().catch(() => "")).trim().slice(0, 240);
+        throw new Error(`ComfyUI reference upload failed (${uploadRes.status})${detail ? `: ${detail}` : ""}`);
     }
     const uploadData = await uploadRes.json().catch(() => ({}));
     const imageValue = getComfyUploadedImageValue(uploadData, filename);

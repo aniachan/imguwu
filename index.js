@@ -47,16 +47,23 @@ const FLUX2_KLEIN_CHARACTER_WORKFLOW = JSON.stringify({
     "5": { "inputs": { "guidance": 3.5, "conditioning": ["4", 0] }, "class_type": "FluxGuidance", "_meta": { "title": "Flux Guidance" } },
     "6": { "inputs": { "conditioning": ["4", 0] }, "class_type": "ConditioningZeroOut", "_meta": { "title": "Zero Negative Conditioning" } },
     "7": { "inputs": { "vae_name": "flux2-vae.safetensors" }, "class_type": "VAELoader", "_meta": { "title": "Flux2 VAE" } },
-    "8": { "inputs": { "image": "%reference_image%" }, "class_type": "LoadImage", "_meta": { "title": "Character Reference Image" } },
-    "9": { "inputs": { "upscale_method": "lanczos", "megapixels": 0.5, "resolution_steps": 1, "image": ["8", 0] }, "class_type": "ImageScaleToTotalPixels", "_meta": { "title": "Scale Reference" } },
-    "10": { "inputs": { "pixels": ["9", 0], "vae": ["7", 0] }, "class_type": "VAEEncode", "_meta": { "title": "Encode Reference" } },
-    "11": { "inputs": { "conditioning": ["5", 0], "latent": ["10", 0] }, "class_type": "ReferenceLatent", "_meta": { "title": "Positive Reference" } },
-    "12": { "inputs": { "conditioning": ["6", 0], "latent": ["10", 0] }, "class_type": "ReferenceLatent", "_meta": { "title": "Negative Reference" } },
+    "8": {
+        "inputs": {
+            "conditioning": ["5", 0],
+            "neg_conditioning": ["6", 0],
+            "vae": ["7", 0],
+            "upscale_method": "lanczos",
+            "scale_megapixels": 0.5,
+            "images_base64": "%reference_image_base64%"
+        },
+        "class_type": "ReferenceChainConditioningBase64",
+        "_meta": { "title": "Character Reference Image" }
+    },
     "13": { "inputs": { "width": "%width%", "height": "%height%", "batch_size": 1 }, "class_type": "EmptyFlux2LatentImage", "_meta": { "title": "Output Size" } },
     "14": { "inputs": { "steps": "%steps%", "width": "%width%", "height": "%height%" }, "class_type": "Flux2Scheduler", "_meta": { "title": "Flux2 Scheduler" } },
     "15": { "inputs": { "sampler_name": "euler" }, "class_type": "KSamplerSelect", "_meta": { "title": "Euler Sampler" } },
     "16": { "inputs": { "noise_seed": "%seed%" }, "class_type": "RandomNoise", "_meta": { "title": "Seed" } },
-    "17": { "inputs": { "cfg": 1, "model": ["2", 0], "positive": ["11", 0], "negative": ["12", 0] }, "class_type": "CFGGuider", "_meta": { "title": "CFG Guider" } },
+    "17": { "inputs": { "cfg": 1, "model": ["2", 0], "positive": ["8", 0], "negative": ["8", 1] }, "class_type": "CFGGuider", "_meta": { "title": "CFG Guider" } },
     "18": { "inputs": { "noise": ["16", 0], "guider": ["17", 0], "sampler": ["15", 0], "sigmas": ["14", 0], "latent_image": ["13", 0] }, "class_type": "SamplerCustomAdvanced", "_meta": { "title": "Sample" } },
     "19": { "inputs": { "samples": ["18", 0], "vae": ["7", 0] }, "class_type": "VAEDecode", "_meta": { "title": "Decode" } },
     "20": { "inputs": { "filename_prefix": "qig_flux2_character", "images": ["19", 0] }, "class_type": "SaveImage", "_meta": { "title": "Save Image" } }
@@ -6259,52 +6266,11 @@ async function blobToDataUrl(blob) {
     });
 }
 
-function getBlobImageExtension(blob) {
-    const mime = String(blob?.type || "").toLowerCase();
-    if (mime.includes("webp")) return "webp";
-    if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
-    if (mime.includes("gif")) return "gif";
-    return "png";
-}
-
-function getComfyUploadedImageValue(uploadData, fallbackName) {
-    const name = String(uploadData?.name || fallbackName || "").trim();
-    const subfolder = String(uploadData?.subfolder || "").trim().replace(/^[/\\]+|[/\\]+$/g, "");
-    return subfolder ? `${subfolder}/${name}` : name;
-}
-
-async function uploadComfyReferenceImage(baseUrl, referenceSource, signal) {
+async function getComfyReferenceImageBase64(referenceSource, signal) {
     const blob = await getImageSourceBlob(referenceSource, signal);
-    const filename = `imguwu_reference_${Date.now()}.${getBlobImageExtension(blob)}`;
-    const formData = new FormData();
-    formData.append("image", blob, filename);
-    formData.append("type", "input");
-    formData.append("overwrite", "true");
-    const uploadRes = await corsFetch(`${baseUrl}/upload/image`, {
-        method: "POST",
-        body: formData,
-        signal,
-    });
-    if (!uploadRes.ok) {
-        const detail = String(await uploadRes.text().catch(() => "")).trim().slice(0, 240);
-        throw new Error(`ComfyUI reference upload failed (${uploadRes.status})${detail ? `: ${detail}` : ""}`);
-    }
-    const uploadData = await uploadRes.json().catch(() => ({}));
-    const imageValue = getComfyUploadedImageValue(uploadData, filename);
-    if (!imageValue) throw new Error("ComfyUI reference upload returned no image name");
-    log(`ComfyUI: Uploaded SillyTavern reference image as "${imageValue}"`);
-    return imageValue;
-}
-
-function bindComfyReferenceLoadImages(workflow, uploadedReferenceImage) {
-    if (!uploadedReferenceImage || !workflow || typeof workflow !== "object") return 0;
-    let bound = 0;
-    for (const node of Object.values(workflow)) {
-        if (node?.class_type !== "LoadImage" || !node.inputs || typeof node.inputs.image !== "string") continue;
-        node.inputs.image = uploadedReferenceImage;
-        bound++;
-    }
-    return bound;
+    const dataUrl = await blobToDataUrl(blob);
+    if (!dataUrl) throw new Error("Could not encode reference image for ComfyUI");
+    return JSON.stringify([dataUrl]);
 }
 
 async function genLocal(prompt, negative, s, signal) {
@@ -6383,10 +6349,10 @@ async function genLocal(prompt, negative, s, signal) {
 
             if (customWorkflow && typeof customWorkflow === "object" && !Array.isArray(customWorkflow)) {
 
-                // Pull the ST/card/upload reference into ComfyUI input storage.
-                let uploadedRefName = '';
+                // Keep ST/card/upload references in the prompt body for base64-aware Comfy nodes.
+                let referenceImageBase64 = '';
                 if (s.localRefImage) {
-                    uploadedRefName = await uploadComfyReferenceImage(baseUrl, s.localRefImage, signal);
+                    referenceImageBase64 = await getComfyReferenceImageBase64(s.localRefImage, signal);
                 }
 
                 // Replace placeholders like sd-proxy does
@@ -6403,7 +6369,8 @@ async function genLocal(prompt, negative, s, signal) {
                     '%sampler%': samplerName,
                     '%scheduler%': schedulerName,
                     '%model%': workflowModel,
-                    '%reference_image%': uploadedRefName
+                    '%reference_image%': '',
+                    '%reference_image_base64%': referenceImageBase64
                 };
                 const typedReplacements = {
                     '%prompt%': prompt,
@@ -6418,7 +6385,8 @@ async function genLocal(prompt, negative, s, signal) {
                     '%sampler%': samplerName,
                     '%scheduler%': schedulerName,
                     '%model%': workflowModel,
-                    '%reference_image%': uploadedRefName
+                    '%reference_image%': '',
+                    '%reference_image_base64%': referenceImageBase64
                 };
 
                 const replaceInObj = (obj) => {
@@ -6437,10 +6405,6 @@ async function genLocal(prompt, negative, s, signal) {
                     }
                 };
                 replaceInObj(customWorkflow);
-                const boundReferenceLoadImages = bindComfyReferenceLoadImages(customWorkflow, uploadedRefName);
-                if (boundReferenceLoadImages) {
-                    log(`ComfyUI: Bound ${boundReferenceLoadImages} LoadImage node(s) to uploaded SillyTavern reference image`);
-                }
                 const injectedApiWorkflowLoras = injectComfyLorasIntoApiWorkflow(customWorkflow, s.comfyLoras);
                 if (injectedApiWorkflowLoras) {
                     log(`ComfyUI: Injected ${injectedApiWorkflowLoras} LoRA(s) into API workflow loaders`);
@@ -6591,26 +6555,31 @@ async function genLocal(prompt, negative, s, signal) {
             log(`ComfyUI: Injected ${injectedCount} LoRA(s)`);
         }
 
-        // img2img: swap EmptyLatentImage for LoadImage + VAEEncode when reference image present
+        // img2img: feed the ST/card/upload reference through the base64 reference node.
         if (s.localRefImage && denoise < 1.0) {
             try {
-                const uploadedName = await uploadComfyReferenceImage(baseUrl, s.localRefImage, signal);
-                // Replace EmptyLatentImage (node 5) with LoadImage
-                workflowNodes["5"] = {
-                    class_type: "LoadImage",
-                    inputs: { image: uploadedName }
-                };
-                // Add VAEEncode node (node 15) to encode the loaded image to latent
+                const referenceImageBase64 = await getComfyReferenceImageBase64(s.localRefImage, signal);
                 const vaeRef = fluxMode ? ["13", 0] : ["4", 2];
+                const negativeRef = workflowNodes["7"] ? ["7", 0] : ["6", 0];
+                workflowNodes["5"] = {
+                    class_type: "ReferenceChainConditioningBase64",
+                    inputs: {
+                        conditioning: ["6", 0],
+                        neg_conditioning: negativeRef,
+                        vae: vaeRef,
+                        upscale_method: "lanczos",
+                        scale_megapixels: Math.max(0.01, Number(s.width) * Number(s.height) / (1024 * 1024)),
+                        images_base64: referenceImageBase64
+                    }
+                };
                 workflowNodes["15"] = {
                     class_type: "VAEEncode",
-                    inputs: { pixels: ["5", 0], vae: vaeRef }
+                    inputs: { pixels: ["5", 2], vae: vaeRef }
                 };
-                // Rewire KSampler latent_image to VAEEncode output
                 workflowNodes["3"].inputs.latent_image = ["15", 0];
-                log(`ComfyUI: img2img mode uses uploaded SillyTavern reference image "${uploadedName}", denoise=${denoise}`);
-            } catch (uploadErr) {
-                throw new Error(`ComfyUI img2img reference upload failed: ${uploadErr.message}`);
+                log(`ComfyUI: img2img mode uses SillyTavern reference image as base64, denoise=${denoise}`);
+            } catch (referenceErr) {
+                throw new Error(`ComfyUI img2img reference encoding failed: ${referenceErr.message}`);
             }
         }
 
@@ -11652,9 +11621,12 @@ function createUI() {
     <div id="qig-workspace-overlay" class="qig-workspace-overlay" role="dialog" aria-modal="true" aria-label="imguwu workspace" tabindex="-1">
     <div class="qig-workspace-shell">
         <header class="qig-workspace-header">
-            <div>
+            <div class="qig-workspace-brand">
+                <span class="qig-logo-mark" aria-hidden="true"></span>
+                <div>
                 <div class="qig-menu-title">imguwu</div>
                 <small>Character image workspace</small>
+                </div>
             </div>
             <button id="qig-workspace-close" class="menu_button" type="button" title="Close imguwu" aria-label="Close imguwu"><span class="fa-solid fa-xmark"></span></button>
         </header>
@@ -12080,8 +12052,8 @@ function createUI() {
                          </div>
                          <small style="opacity:0.6;font-size:10px;">Use presets for quick graph switching (e.g., with LoRA / without LoRA). Profiles save provider settings; workflow presets focus on Comfy graph fields.</small>
                          <label>Custom Workflow JSON</label>
-                         <textarea id="qig-comfy-workflow" rows="3" placeholder='Paste workflow from ComfyUI "Save (API Format)". Use placeholders: %prompt%, %negative%, %seed%, %width%, %height%, %steps%, %cfg%, %denoise%, %clip_skip%, %sampler%, %scheduler%, %model%, %reference_image%'>${esc(s.comfyWorkflow || "")}</textarea>
-                         <div class="form-hint">Optional for standard SD1.5/SDXL checkpoints. Required for non-standard pipelines (Flux/UNET-only, dual-CLIP, custom node graphs). Export from ComfyUI: Save → API Format. Use %reference_image% in a LoadImage node to include the uploaded reference image.</div>
+                         <textarea id="qig-comfy-workflow" rows="3" placeholder='Paste workflow from ComfyUI "Save (API Format)". Use placeholders: %prompt%, %negative%, %seed%, %width%, %height%, %steps%, %cfg%, %denoise%, %clip_skip%, %sampler%, %scheduler%, %model%, %reference_image_base64%'>${esc(s.comfyWorkflow || "")}</textarea>
+                         <div class="form-hint">Optional for standard SD1.5/SDXL checkpoints. Required for non-standard pipelines (Flux/UNET-only, dual-CLIP, custom node graphs). Export from ComfyUI: Save → API Format. Use %reference_image_base64% in a base64-aware reference node for the character reference.</div>
                     </div>
                     <div id="qig-local-a1111-opts" style="display:${s.localType === "a1111" ? "block" : "none"}">
                          <label>Model</label>
@@ -13966,9 +13938,10 @@ function addWorkspaceButton() {
     if (document.getElementById("qig-workspace-btn")) return;
     const btn = document.createElement("div");
     btn.id = "qig-workspace-btn";
-    btn.className = "fa-solid fa-image interactable";
+    btn.className = "interactable qig-chat-logo-button";
     btn.title = "Open imguwu workspace";
-    btn.style.cssText = "cursor:pointer;padding:5px;font-size:1.2em;opacity:0.7;";
+    btn.setAttribute("aria-label", "Open imguwu workspace");
+    btn.setAttribute("role", "button");
     btn.onclick = openImgUwuWorkspace;
     const leftArea = document.getElementById("leftSendForm") || document.querySelector("#send_form .left_menu_buttons");
     if (leftArea) leftArea.appendChild(btn);
@@ -13982,7 +13955,6 @@ function addInputButton() {
     btn.id = "qig-input-btn";
     btn.className = "fa-solid fa-palette interactable";
     btn.title = "Generate Image (right-click for presets)";
-    btn.style.cssText = "cursor:pointer;padding:5px;font-size:1.2em;opacity:0.7;";
     btn.onclick = () => {
         closePalettePresetMenu();
         const now = Date.now();

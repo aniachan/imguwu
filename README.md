@@ -35,7 +35,7 @@ It opens a full workspace split into Character, Generate, and Automation tabs.
 The saved `Visual Identity` is kept separately from the raw character card.
 Prompt generation uses it before noisy card description text, and direct
 generation prepends it to the final image prompt. The saved reference image is
-character-scoped and feeds ComfyUI `%reference_image%`.
+character-scoped and feeds ComfyUI `%reference_image_base64%`.
 
 Character settings, references, presets, workflows, profiles, and contextual
 filters are saved into SillyTavern extension settings. Browser storage remains a
@@ -79,8 +79,9 @@ The built-in Flux workflow expects:
 - An edit/reference Flux.2 Klein UNET in the `localModel` field.
 - `qwen_3_8b_fp8mixed.safetensors` as the Flux.2 text encoder.
 - `flux2-vae.safetensors` as the Flux.2 VAE.
-- ComfyUI nodes that include `FluxKVCache`, `ReferenceLatent`,
-  `EmptyFlux2LatentImage`, and `Flux2Scheduler`.
+- ComfyUI nodes that include `FluxKVCache`, `EmptyFlux2LatentImage`,
+  `Flux2Scheduler`, and `ReferenceChainConditioningBase64` from
+  `ComfyUI-ReferenceChain`.
 
 The built-in Z-Image workflow expects:
 
@@ -104,12 +105,12 @@ JSON still works for experiments and model swaps.
 
 The workflow placeholder reference is in
 [`docs/comfyui-workflow-variables.md`](docs/comfyui-workflow-variables.md).
-The important character placeholder is `%reference_image%`; imguwu uploads the
-current saved reference from SillyTavern to ComfyUI input storage before
-replacing it. Reference `LoadImage` nodes in API workflows are rebound to that
-uploaded input at generation time, so workflows do not depend on a local static
-reference file path. ComfyUI output is read back into imguwu before it is
-shown, inserted, or saved by SillyTavern.
+The important character placeholder is `%reference_image_base64%`; imguwu
+fetches the current saved reference from SillyTavern and sends it inside the
+ComfyUI prompt body. Use it with a base64-aware API node such as
+`ReferenceChainConditioningBase64` so reference workflows do not depend on a
+static file path or a ComfyUI upload endpoint. ComfyUI output is read back into
+imguwu before it is shown, inserted, or saved by SillyTavern.
 
 ## Included Workflow Features
 

@@ -18,7 +18,8 @@ imguwu replaces placeholders anywhere inside string values before sending the wo
 | `%sampler%` | ComfyUI sampler name derived from the selected sampler. |
 | `%scheduler%` | Current ComfyUI scheduler setting. |
 | `%model%` | Current Local Model field. |
-| `%reference_image%` | Uploaded ComfyUI image filename for the current ComfyUI reference image, or an empty string when no reference image is set. Card-image and uploaded character references resolve through this same placeholder. |
+| `%reference_image_base64%` | JSON array containing the current ComfyUI reference image as a base64 data URL, or an empty string when no reference image is set. Card-image and uploaded character references resolve through this same placeholder. |
+| `%reference_image%` | Legacy empty filename placeholder. Use `%reference_image_base64%` for new reference workflows. |
 
 ## Typed Values
 
@@ -40,18 +41,26 @@ Those become numbers in the submitted workflow. If a placeholder is embedded ins
 
 To use the character reference image in a custom workflow:
 
-1. Add a `LoadImage` node in ComfyUI.
+1. Add a base64-aware reference node such as
+   `ReferenceChainConditioningBase64` from `ComfyUI-ReferenceChain`.
 2. Export the workflow in API format.
-3. Set that node's `image` input to `%reference_image%`.
+3. Set that node's `images_base64` input to `%reference_image_base64%`.
 
-If no character reference image is selected, `%reference_image%` becomes an empty string.
+If no character reference image is selected, `%reference_image_base64%`
+becomes an empty string.
 
-imguwu fetches the saved reference from SillyTavern at generation time, uploads
-it to ComfyUI input storage, and binds API-format `LoadImage` nodes to that
-uploaded input. That prevents reference workflows from depending on a static
-image file path on the ComfyUI machine.
+imguwu fetches the saved reference from SillyTavern at generation time and
+sends it inside the ComfyUI `/prompt` request. That keeps reference workflows
+off both static image paths on the ComfyUI machine and the ComfyUI multipart
+upload endpoint.
 
-The built-in Auto mode uses the Flux.2 Klein workflow when `%reference_image%` exists. That graph loads the uploaded input image, encodes it through the Flux.2 VAE, and passes it into `ReferenceLatent`. Use `Use Card Image` for the current character card image or upload a clearer reference in the Character Identity section. Card-image capture saves immediately; uploaded references persist with `Save Char`.
+The built-in Auto mode uses the Flux.2 Klein workflow when a saved reference
+exists. That graph passes `%reference_image_base64%` to
+`ReferenceChainConditioningBase64`, which scales and encodes the reference
+through the Flux.2 VAE. Use `Use Card Image` for the current character card
+image or upload a clearer reference in the Character Identity section.
+Card-image capture saves immediately; uploaded references persist with
+`Save Char`.
 
 After ComfyUI finishes, imguwu fetches the generated image back from ComfyUI
 before SillyTavern displays, inserts, or saves it. Chat output therefore does

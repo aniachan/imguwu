@@ -78,7 +78,7 @@ The built-in Flux workflow expects:
 
 - An edit/reference Flux.2 Klein UNET in the `localModel` field.
 - `qwen_3_8b_fp8mixed.safetensors` as the Flux.2 text encoder.
-- `flux2-vae.safetensors` as the Flux.2 VAE.
+- `full_encoder_small_decoder.safetensors` as the 9B image-edit VAE.
 - ComfyUI nodes that include `FluxKVCache`, `EmptyFlux2LatentImage`,
   `Flux2Scheduler`, and `ReferenceChainConditioningBase64` from
   `ComfyUI-ReferenceChain`.

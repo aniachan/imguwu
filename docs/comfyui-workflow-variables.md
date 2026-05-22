@@ -56,8 +56,9 @@ upload endpoint.
 
 The built-in Auto mode uses the Flux.2 Klein workflow when a saved reference
 exists. That graph passes `%reference_image_base64%` to
-`ReferenceChainConditioningBase64`, which scales and encodes the reference
-through the Flux.2 VAE. Use `Use Card Image` for the current character card
+`ReferenceChainConditioningBase64`, which decodes the transport-safe reference
+before the built-in graph feeds it through the Flux.2 image-edit VAE and core
+`ReferenceLatent` branch. Use `Use Card Image` for the current character card
 image or upload a clearer reference in the Character Identity section.
 Card-image capture saves immediately; uploaded references persist with
 `Save Char`.

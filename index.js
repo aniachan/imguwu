@@ -46,24 +46,27 @@ const FLUX2_KLEIN_CHARACTER_WORKFLOW = JSON.stringify({
     },
     "5": { "inputs": { "guidance": 3.5, "conditioning": ["4", 0] }, "class_type": "FluxGuidance", "_meta": { "title": "Flux Guidance" } },
     "6": { "inputs": { "conditioning": ["4", 0] }, "class_type": "ConditioningZeroOut", "_meta": { "title": "Zero Negative Conditioning" } },
-    "7": { "inputs": { "vae_name": "flux2-vae.safetensors" }, "class_type": "VAELoader", "_meta": { "title": "Flux2 VAE" } },
+    "7": { "inputs": { "vae_name": "full_encoder_small_decoder.safetensors" }, "class_type": "VAELoader", "_meta": { "title": "Flux2 Edit VAE" } },
     "8": {
         "inputs": {
             "conditioning": ["5", 0],
             "neg_conditioning": ["6", 0],
             "vae": ["7", 0],
-            "upscale_method": "lanczos",
-            "scale_megapixels": 0.5,
+            "upscale_method": "nearest-exact",
+            "scale_megapixels": 1,
             "images_base64": "%reference_image_base64%"
         },
         "class_type": "ReferenceChainConditioningBase64",
         "_meta": { "title": "Character Reference Image" }
     },
+    "9": { "inputs": { "pixels": ["8", 2], "vae": ["7", 0] }, "class_type": "VAEEncode", "_meta": { "title": "Encode Reference" } },
+    "11": { "inputs": { "conditioning": ["5", 0], "latent": ["9", 0] }, "class_type": "ReferenceLatent", "_meta": { "title": "Positive Reference" } },
+    "12": { "inputs": { "conditioning": ["6", 0], "latent": ["9", 0] }, "class_type": "ReferenceLatent", "_meta": { "title": "Negative Reference" } },
     "13": { "inputs": { "width": "%width%", "height": "%height%", "batch_size": 1 }, "class_type": "EmptyFlux2LatentImage", "_meta": { "title": "Output Size" } },
     "14": { "inputs": { "steps": "%steps%", "width": "%width%", "height": "%height%" }, "class_type": "Flux2Scheduler", "_meta": { "title": "Flux2 Scheduler" } },
     "15": { "inputs": { "sampler_name": "euler" }, "class_type": "KSamplerSelect", "_meta": { "title": "Euler Sampler" } },
     "16": { "inputs": { "noise_seed": "%seed%" }, "class_type": "RandomNoise", "_meta": { "title": "Seed" } },
-    "17": { "inputs": { "cfg": 1, "model": ["2", 0], "positive": ["8", 0], "negative": ["8", 1] }, "class_type": "CFGGuider", "_meta": { "title": "CFG Guider" } },
+    "17": { "inputs": { "cfg": 1, "model": ["2", 0], "positive": ["11", 0], "negative": ["12", 0] }, "class_type": "CFGGuider", "_meta": { "title": "CFG Guider" } },
     "18": { "inputs": { "noise": ["16", 0], "guider": ["17", 0], "sampler": ["15", 0], "sigmas": ["14", 0], "latent_image": ["13", 0] }, "class_type": "SamplerCustomAdvanced", "_meta": { "title": "Sample" } },
     "19": { "inputs": { "samples": ["18", 0], "vae": ["7", 0] }, "class_type": "VAEDecode", "_meta": { "title": "Decode" } },
     "20": { "inputs": { "filename_prefix": "qig_flux2_character", "images": ["19", 0] }, "class_type": "SaveImage", "_meta": { "title": "Save Image" } }
@@ -6273,6 +6276,28 @@ async function getComfyReferenceImageBase64(referenceSource, signal) {
     return JSON.stringify([dataUrl]);
 }
 
+function getComfyHistoryImageCandidates(outputs) {
+    if (!outputs || typeof outputs !== "object") return [];
+    const candidates = [];
+    for (const [nodeId, output] of Object.entries(outputs)) {
+        for (const image of output?.images || []) {
+            const filename = String(image?.filename || "").trim();
+            if (!filename) continue;
+            candidates.push({
+                nodeId,
+                filename,
+                subfolder: String(image?.subfolder || ""),
+                type: String(image?.type || "output"),
+            });
+        }
+    }
+    return candidates.sort((a, b) => {
+        const outputRankA = a.type === "output" ? 0 : 1;
+        const outputRankB = b.type === "output" ? 0 : 1;
+        return outputRankA - outputRankB;
+    });
+}
+
 async function genLocal(prompt, negative, s, signal) {
     const baseUrl = s.localUrl.replace(/\/$/, "");
 
@@ -6312,14 +6337,19 @@ async function genLocal(prompt, negative, s, signal) {
                 const result = hist[promptId];
                 checkComfyResult(result);
                 if (result?.outputs) {
-                    for (const nodeId in result.outputs) {
-                        const output = result.outputs[nodeId];
-                        if (output.images?.[0]) {
-                            const img = output.images[0];
-                            const imageUrl = `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || "")}&type=${img.type || "output"}`;
+                    let lastImageFetchError = null;
+                    for (const img of getComfyHistoryImageCandidates(result.outputs)) {
+                        try {
+                            const imageUrl = `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder)}&type=${encodeURIComponent(img.type)}`;
                             const imageBlob = await getImageSourceBlob(imageUrl, signal);
                             return await blobToDataUrl(imageBlob);
+                        } catch (imageErr) {
+                            lastImageFetchError = imageErr;
+                            log(`ComfyUI: Could not fetch history image from node ${img.nodeId} (${img.type}/${img.filename}): ${imageErr.message}`);
                         }
+                    }
+                    if (lastImageFetchError) {
+                        log(`ComfyUI: Waiting for a downloadable saved image after history lookup: ${lastImageFetchError.message}`);
                     }
                 }
             }

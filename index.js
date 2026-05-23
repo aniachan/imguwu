@@ -6298,6 +6298,19 @@ function getComfyHistoryImageCandidates(outputs) {
     });
 }
 
+function getComfyHistoryImageUrls(baseUrl, image) {
+    const params = new URLSearchParams({
+        filename: image.filename,
+        subfolder: image.subfolder,
+        type: image.type,
+    });
+    const query = params.toString();
+    return [
+        `${baseUrl}/api/view?${query}`,
+        `${baseUrl}/view?${query}`,
+    ];
+}
+
 async function genLocal(prompt, negative, s, signal) {
     const baseUrl = s.localUrl.replace(/\/$/, "");
 
@@ -6340,9 +6353,16 @@ async function genLocal(prompt, negative, s, signal) {
                     let lastImageFetchError = null;
                     for (const img of getComfyHistoryImageCandidates(result.outputs)) {
                         try {
-                            const imageUrl = `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder)}&type=${encodeURIComponent(img.type)}`;
-                            const imageBlob = await getImageSourceBlob(imageUrl, signal);
-                            return await blobToDataUrl(imageBlob);
+                            let endpointError = null;
+                            for (const imageUrl of getComfyHistoryImageUrls(baseUrl, img)) {
+                                try {
+                                    const imageBlob = await getImageSourceBlob(imageUrl, signal);
+                                    return await blobToDataUrl(imageBlob);
+                                } catch (imageErr) {
+                                    endpointError = imageErr;
+                                }
+                            }
+                            throw endpointError || new Error("Could not fetch image source");
                         } catch (imageErr) {
                             lastImageFetchError = imageErr;
                             log(`ComfyUI: Could not fetch history image from node ${img.nodeId} (${img.type}/${img.filename}): ${imageErr.message}`);

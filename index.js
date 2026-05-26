@@ -6253,11 +6253,14 @@ async function getImageSourceBlob(source, signal) {
     const isDataLike = url.startsWith("data:") || url.startsWith("blob:");
     const res = isDataLike ? await fetch(url, { signal }) : await corsFetch(url, { signal });
     if (!res.ok) throw new Error(`Could not fetch image source (${res.status})`);
-    const blob = await res.blob();
-    if (!String(blob.type || "").startsWith("image/")) {
+
+    const contentType = String(res.headers.get("content-type") || "");
+    const buffer = await res.arrayBuffer();
+    const formatInfo = detectInlineImageFormat(buffer, contentType, url);
+    if (!formatInfo) {
         throw new Error("Image source did not return an image file");
     }
-    return blob;
+    return new Blob([buffer], { type: formatInfo.mime });
 }
 
 async function blobToDataUrl(blob) {
@@ -6274,6 +6277,39 @@ async function getComfyReferenceImageBase64(referenceSource, signal) {
     const dataUrl = await blobToDataUrl(blob);
     if (!dataUrl) throw new Error("Could not encode reference image for ComfyUI");
     return JSON.stringify([dataUrl]);
+}
+
+function detectInlineImageFormat(buffer, contentType = "", url = "") {
+    const bytes = new Uint8Array(buffer);
+    const isPng = bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47;
+    if (isPng) return { ext: "png", mime: "image/png", isPng: true };
+    const isJpeg = bytes.length >= 3 && bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF;
+    if (isJpeg) return { ext: "jpg", mime: "image/jpeg", isPng: false };
+    const isWebp = bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
+    if (isWebp) return { ext: "webp", mime: "image/webp", isPng: false };
+    const isGif = bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38 && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61;
+    if (isGif) return { ext: "gif", mime: "image/gif", isPng: false };
+
+    const ct = contentType.toLowerCase();
+    if (ct.startsWith("image/")) {
+        if (ct.includes("png")) return { ext: "png", mime: "image/png", isPng: true };
+        if (ct.includes("webp")) return { ext: "webp", mime: "image/webp", isPng: false };
+        if (ct.includes("gif")) return { ext: "gif", mime: "image/gif", isPng: false };
+        return { ext: "jpg", mime: ct.split(";")[0] || "image/jpeg", isPng: false };
+    }
+
+    try {
+        const parsed = new URL(url, window.location?.href || "http://localhost/");
+        const filename = String(parsed.searchParams.get("filename") || "").toLowerCase();
+        if (filename.endsWith(".png")) return { ext: "png", mime: "image/png", isPng: true };
+        if (filename.endsWith(".webp")) return { ext: "webp", mime: "image/webp", isPng: false };
+        if (filename.endsWith(".gif")) return { ext: "gif", mime: "image/gif", isPng: false };
+        if (filename.endsWith(".jpg") || filename.endsWith(".jpeg")) return { ext: "jpg", mime: "image/jpeg", isPng: false };
+    } catch {
+        // Ignore URL parse errors and fall through to rejection.
+    }
+
+    return null;
 }
 
 function getComfyHistoryImageCandidates(outputs) {
@@ -15339,9 +15375,9 @@ function getServerSubfolder() {
     return "QuickImageGen";
 }
 
-async function fetchImageBuffer(url) {
+async function fetchImageBuffer(url, signal) {
     const isDataLike = url.startsWith("data:") || url.startsWith("blob:");
-    const res = isDataLike ? await fetch(url) : await corsFetch(url);
+    const res = isDataLike ? await fetch(url, { signal }) : await corsFetch(url, { signal });
     if (!res.ok) throw new Error(`Failed to fetch image (${res.status})`);
     const contentType = res.headers.get("content-type") || "";
     const buffer = await res.arrayBuffer();

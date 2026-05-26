@@ -10372,10 +10372,21 @@ function saveCharSettings() {
     } else {
         delete charRefImages[storageKey];
     }
-    const savedCharRefs = safeSetStorage("qig_char_ref_images", JSON.stringify(charRefImages), "Failed to save character reference images. Browser storage may be full.");
-    if (!savedCharSettings || !savedCharRefs) return;
+
+    // Server-backed extension settings are the source of truth. localStorage is
+    // only a cache and can legitimately fail for large base64 reference images.
     backupToSettings("qig_char_settings", charSettings);
     backupToSettings("qig_char_ref_images", charRefImages);
+
+    const savedCharRefs = safeSetStorage("qig_char_ref_images", JSON.stringify(charRefImages));
+    if (!savedCharSettings) {
+        toastr?.error?.("Failed to save character settings cache. Server-backed settings were updated, but browser storage may be full.");
+        return;
+    }
+    if (!savedCharRefs) {
+        log("Character reference image cache write failed; relying on server-backed extension settings");
+    }
+
     showStatus("💾 Saved settings for this character");
     setTimeout(hideStatus, 2000);
 }

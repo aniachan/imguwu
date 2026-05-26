@@ -2423,8 +2423,7 @@ async function fetchComfyUILoras(url) {
 }
 
 async function uploadComfyUIImage(baseUrl, imageSrc, signal) {
-    const dataUrl = await getComfyReferenceImageBase64(imageSrc, signal);
-    const blob = await (await fetch(dataUrl, { signal })).blob();
+    const blob = await getImageSourceBlob(imageSrc, signal);
     const extension = blob.type === "image/jpeg" ? "jpg" : blob.type === "image/webp" ? "webp" : "png";
     const uploadName = `imguwu_reference_${Date.now()}.${extension}`;
     const formData = new FormData();

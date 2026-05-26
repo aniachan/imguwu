@@ -9920,6 +9920,8 @@ window.setVisiblePoolsEnabled = setVisiblePoolsEnabled;
 // Character-specific settings
 let charSettingsBaseState = null;
 let charSettingsBaseCharId = null;
+let workspaceContextSyncInterval = null;
+let lastWorkspaceContextSignature = "";
 
 function getCurrentRefImages(s) {
     if (s.provider === "local") return s.localRefImage ? [s.localRefImage] : [];
@@ -10004,6 +10006,41 @@ function getCurrentCharId() {
 function getCurrentCharName() {
     const entry = getCurrentCharacterEntry();
     return entry?.name || entry?.avatar || null;
+}
+
+function getWorkspaceContextSignature() {
+    const ctx = getContext?.();
+    const entry = getCurrentCharacterEntry();
+    const avatar = String(entry?.avatar || entry?.data?.avatar || "").trim();
+    return JSON.stringify({
+        characterId: ctx?.characterId ?? null,
+        groupId: ctx?.groupId ?? null,
+        avatar,
+    });
+}
+
+function syncWorkspaceCharacterState(force = false) {
+    if (!document.getElementById("qig-workspace-overlay")) return;
+    const signature = getWorkspaceContextSignature();
+    if (!force && signature === lastWorkspaceContextSignature) return;
+    lastWorkspaceContextSignature = signature;
+    loadCharSettings();
+}
+
+function startWorkspaceContextSync() {
+    stopWorkspaceContextSync();
+    lastWorkspaceContextSignature = "";
+    workspaceContextSyncInterval = setInterval(() => {
+        syncWorkspaceCharacterState();
+    }, 500);
+}
+
+function stopWorkspaceContextSync() {
+    if (workspaceContextSyncInterval) {
+        clearInterval(workspaceContextSyncInterval);
+        workspaceContextSyncInterval = null;
+    }
+    lastWorkspaceContextSignature = "";
 }
 
 function getCurrentCardKey() {
@@ -12883,6 +12920,8 @@ function createUI() {
     document.getElementById("qig-comfy-flux2-character-workflow").onclick = applyFlux2KleinCharacterWorkflow;
     document.getElementById("qig-comfy-zimage-workflow").onclick = applyZImageTurboWorkflow;
     renderComfyLoraManager();
+    syncWorkspaceCharacterState(true);
+    startWorkspaceContextSync();
 
     document.getElementById("qig-provider").onchange = (e) => {
         getSettings().provider = e.target.value;
@@ -14012,6 +14051,7 @@ function runConfiguredPaletteGeneration() {
 }
 
 function closeImgUwuWorkspace() {
+    stopWorkspaceContextSync();
     document.getElementById("qig-workspace-overlay")?.remove();
     clearCache();
 }
@@ -15282,7 +15322,7 @@ jQuery(function () {
                     if (_injectProcessingCount <= 0) {
                         _processedInjectIndices.clear();
                     }
-                    loadCharSettings();
+                    syncWorkspaceCharacterState(true);
                     renderContextualFilters();
                 });
             }

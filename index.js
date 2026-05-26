@@ -5311,6 +5311,9 @@ Requirements:
 - Describe only the delta from the reference image: action, pose, expression, framing, lighting, environment, and any explicitly requested outfit/state changes.
 - Do NOT describe the base character appearance, face, hair, body, age, species, accessories, or overall identity unless the scene explicitly changes one of those things.
 - Do NOT describe style unless the scene explicitly asks for a different style.
+- The prompt MUST include the visible action or pose change from the scene.
+- The prompt MUST include scene/framing context such as environment, camera angle, shot type, or lighting when the scene implies any of those.
+- Never output only a subject description or portrait label.
 - Do NOT add photorealistic, hyperrealistic, live-action, cinematic lens, skin-texture, or photography language unless the scene explicitly asks for it.
 - Keep the prompt compact and non-redundant.
 - Prefer short edit-style phrasing such as "kneeling, looking up at camera, warm indoor light" over full sentences.
@@ -5525,6 +5528,10 @@ Tags:`;
 
         if (referenceDriven) {
             cleaned = compactReferenceScenePrompt(cleaned, s);
+            if (isLikelyPortraitOnlyReferencePrompt(cleaned)) {
+                log("Reference prompt looked too portrait-only; recovering scene delta...");
+                cleaned = await generateReferenceSceneDeltaRecovery(basePrompt, s, signal);
+            }
         }
 
         return cleaned || buildVisualPromptFallback(basePrompt);
@@ -5544,6 +5551,14 @@ function isLikelyRoleplayPrompt(value) {
     const narrativeContinuation = /\b(?:says|said|whispers|replies|thinks|thought|asks|answers)\b.{0,50}(?:["“]|that\b)/i.test(text);
     const turns = /\b(?:{{char}}|{{user}}|assistant|user)\s*:/i.test(text);
     return quotedDialogue || roleplayActions || narrativeContinuation || turns;
+}
+
+function isLikelyPortraitOnlyReferencePrompt(value) {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text) return true;
+    const hasAction = /\b(?:sit|sits|sitting|stand|standing|kneel|kneeling|walk|walking|run|running|lean|leaning|reach|reaching|look|looking|turn|turning|pose|posed|smile|smiling|cry|crying|embrace|embracing|kiss|kissing|hold|holding|point|pointing|lie|lying)\b/.test(text);
+    const hasScene = /\b(?:room|bedroom|classroom|street|forest|beach|window|table|chair|bed|sofa|indoor|outdoor|background|framing|close-up|close up|medium shot|wide shot|overhead|lighting|sunlight|night|day|rain|snow|camera)\b/.test(text);
+    return !(hasAction && hasScene);
 }
 
 function buildVisualPromptFallback(scene) {
@@ -5645,6 +5660,54 @@ IMAGE PROMPT:`;
         log(`Visual prompt recovery failed: ${e.message}`);
     }
     return buildVisualPromptFallback(scene);
+}
+
+async function generateReferenceSceneDeltaRecovery(scene, settings, signal) {
+    const s = settings || getSettings();
+    const timestamp = Date.now();
+    const recoveryInstruction = `[REFERENCE IMAGE EDIT DELTA TASK]
+The reference image already defines the character identity and base appearance.
+
+Return ONLY a short edit prompt describing the scene delta to apply.
+
+Requirements:
+- Include the visible action or pose change.
+- Include expression if implied.
+- Include environment, framing, or lighting when the scene implies them.
+- Do NOT describe base appearance or identity.
+- Do NOT output only a portrait label.
+- No commentary.
+
+SCENE:
+${truncateForContext(scene, 2400)}
+
+EDIT PROMPT:`;
+    try {
+        const result = s.llmOverrideEnabled && s.llmOverrideProfileId
+            ? await callOverrideLLM(`[${timestamp}]\n${recoveryInstruction}`, "", signal, { returnMeta: false, includePreset: false, useRequestedPreset: false, maxTokens: 80 })
+            : await callInternalStandaloneLLM(`[${timestamp}]\n${recoveryInstruction}`, {
+                signal,
+                quietName: `ImageGenRefRepair_${timestamp}`,
+                label: "reference image prompt repair request",
+                maxTokens: 80,
+            });
+        const cleaned = finalizeReferenceWorkflowPrompt(String(result || "")
+            .replace(/\[\d+\]\s*/g, "")
+            .replace(/^edit prompt\s*:\s*/i, "")
+            .trim(), s);
+        if (cleaned && !isLikelyPortraitOnlyReferencePrompt(cleaned)) return cleaned;
+    } catch (e) {
+        if (e.name === "AbortError") throw e;
+        log(`Reference scene delta recovery failed: ${e.message}`);
+    }
+    const fallbackScene = String(scene || "")
+        .replace(/(?:^|\n)\s*[^:\n]{1,48}:\s*/g, " ")
+        .replace(/["“”]/g, "")
+        .replace(/\*([^*]+)\*/g, "$1")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 200);
+    return finalizeReferenceWorkflowPrompt(`${fallbackScene}, environment visible, scene context, expressive pose`, s);
 }
 
 async function pollinationsFetchImageData(prompt, negative, s, signal) {

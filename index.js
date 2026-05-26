@@ -2112,6 +2112,15 @@ function isComfyFluxMode(s) {
     return !!s?.comfySkipNegativePrompt && !!(s?.comfyFluxClipModel1 || "").trim();
 }
 
+function isUsingComfyReferenceWorkflow(settings = getSettings()) {
+    const s = settings || {};
+    if (s.provider !== "local" || s.localType !== "comfyui" || !s.localRefImage) return false;
+    const workflowMode = String(s.comfyBuiltinWorkflow || "auto").trim();
+    if (workflowMode === "zimage") return false;
+    if (workflowMode === "flux2") return true;
+    return workflowMode === "auto" || !s.comfyWorkflow?.trim();
+}
+
 const QIG_RELAY_BASE = "/api/plugins/quick-image-gen-relay";
 const CORS_PROXY_BASIC_AUTH_MESSAGE = "SillyTavern basicAuthMode is blocking the CORS proxy for requests that need their own Authorization header. Install the optional Quick Image Gen server plugin (see README), or disable basicAuthMode to use CivitAI/Replicate.";
 
@@ -4109,6 +4118,7 @@ function getPromptAwareProfileContext(profile, sceneText = "") {
 function resolveLLMPromptProfileContext(ctx = getContext(), sceneText = "") {
     const baseProfile = resolveChatProfileContext(ctx);
     const promptAwareProfile = getPromptAwareProfileContext(baseProfile, sceneText);
+    const referenceDriven = isUsingComfyReferenceWorkflow();
 
     if (promptAwareProfile.isGroup || promptAwareProfile.charNames.length > 1) {
         return {
@@ -4122,9 +4132,11 @@ function resolveLLMPromptProfileContext(ctx = getContext(), sceneText = "") {
     const currentData = currentEntry?.data || {};
     const userName = String(promptAwareProfile.userName || "").trim() || "user";
     const currentCardName = normalizeScopeLabel(currentEntry?.name || currentEntry?.avatar || ctx?.name2 || "");
-    const directCardDesc = prependVisualIdentity(getCharacterVisualIdentity(currentEntry?.id), truncateForContext(currentData.description, 1500));
-    const directCardScenario = truncateForContext(currentData.scenario, 600);
-    const directCardTags = getCharacterCardTags(currentData).join(", ");
+    const directCardDesc = referenceDriven
+        ? truncateForContext(currentData.description, 900)
+        : prependVisualIdentity(getCharacterVisualIdentity(currentEntry?.id), truncateForContext(currentData.description, 1500));
+    const directCardScenario = referenceDriven ? "" : truncateForContext(currentData.scenario, 600);
+    const directCardTags = referenceDriven ? "" : getCharacterCardTags(currentData).join(", ");
     const discoveredNames = uniqueStringList([
         ...extractLikelyCharacterNames(directCardDesc),
         ...extractLikelyCharacterNames(directCardScenario),
@@ -4156,6 +4168,7 @@ function resolveLLMPromptProfileContext(ctx = getContext(), sceneText = "") {
         userDescResolved: resolvePrompt(promptAwareProfile.userDesc || "", promptOverrides),
         usesCurrentCardContext: true,
         useExactNameRequirements: false,
+        referenceDriven,
     };
 }
 
@@ -5117,6 +5130,7 @@ async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
         const activeCharacterNames = uniqueStringList(profile.charNames || []);
         const activeCharacterList = activeCharacterNames.join(", ");
         const resolvedPrefill = getResolvedLLMPrefill(s);
+        const referenceDriven = !!profile.referenceDriven;
         const sceneUsesFirstPersonUser = /\b(i|me|my|mine|myself)\b/i.test(basePrompt);
         const sceneMentionsUserByName = promptIncludesName(basePrompt, userName);
         const sceneMentionedCharacterNames = activeCharacterNames.filter(name => promptIncludesName(basePrompt, name));
@@ -5133,10 +5147,10 @@ async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
 
         let appearanceContext = "";
         if (profile.usesCurrentCardContext) {
-            if (charDesc) appearanceContext += `${charName}'s appearance: ${charDesc.substring(0, 1500)}\n`;
+            if (charDesc) appearanceContext += `${charName}'s appearance: ${charDesc.substring(0, referenceDriven ? 500 : 1500)}\n`;
             if (userPersona) appearanceContext += `${userName}'s appearance: ${userPersona.substring(0, 800)}\n`;
-            if (tags) appearanceContext += `Source/Tags: ${tags}\n`;
-            if (scenario) appearanceContext += `Setting: ${scenario.substring(0, 400)}\n`;
+            if (!referenceDriven && tags) appearanceContext += `Source/Tags: ${tags}\n`;
+            if (!referenceDriven && scenario) appearanceContext += `Setting: ${scenario.substring(0, 400)}\n`;
         } else {
             const appearanceSections = [];
             if (sceneIncludesUserPersona && userPersona) {
@@ -5200,6 +5214,9 @@ async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
             : "";
         const userSceneRequirementBullet = userPersona
             ? `\n- If the scene refers to the user in first person or by name, use the user persona reference below for that subject (${userName})`
+            : "";
+        const referenceWorkflowBlock = referenceDriven
+            ? `\nREFERENCE IMAGE MODE:\n- A reference image already defines the character identity.\n- Focus on the current scene, pose, expression, framing, clothing state, lighting, and environment.\n- Do NOT re-describe the full character profile unless the scene explicitly needs a specific visible trait.\n- Keep the final prompt concise and avoid redundant identity restatements.`
             : "";
 
         const isNatural = s.llmPromptStyle === "natural";
@@ -5278,7 +5295,7 @@ ${multiMessageContextBlock}
 [Output ONLY an image generation prompt. No commentary or explanation.]${skinEnforce}
 
 CHARACTER REFERENCE:
-${appearanceContext}${exactNameBlock}${userNameBlock}${identityRequirementBlock}${subjectPriorityBlock}
+${appearanceContext}${exactNameBlock}${userNameBlock}${identityRequirementBlock}${subjectPriorityBlock}${referenceWorkflowBlock}
 ${isMultiMessage ? "SCENE CONTEXT (multiple messages):\n" : "CURRENT SCENE: "}${basePrompt}
 
 Write a detailed image prompt describing:
@@ -5342,7 +5359,7 @@ WRONG (DO NOT do this):
 
 Create Danbooru/Booru-style tags for this ${isMultiMessage ? "scene context:\n" : "scene: "}${basePrompt}
 
-Character info: ${appearanceContext}${exactNameBlock}${userNameBlock}${identityRequirementBlock}${subjectPriorityBlock}
+Character info: ${appearanceContext}${exactNameBlock}${userNameBlock}${identityRequirementBlock}${subjectPriorityBlock}${referenceWorkflowBlock}
 
 Required tag categories:
 - Character name + series name (CRITICAL: Use recognizable fictional media character tags whenever recognized${shouldUseExactNameRequirements ? `, and keep exact active names like ${activeCharacterList || "the named character"} when no canonical tag exists` : ""})
@@ -14469,7 +14486,10 @@ async function generateImageFromPlainDescription() {
             }
         }
 
-        prompt = applyCurrentVisualIdentityToPrompt(applyStyle(prompt, s));
+        prompt = applyStyle(prompt, s);
+        if (!isUsingComfyReferenceWorkflow(s)) {
+            prompt = applyCurrentVisualIdentityToPrompt(prompt);
+        }
 
         if (s.appendQuality && s.qualityTags) {
             prompt = `${s.qualityTags}, ${prompt}`;
@@ -14649,7 +14669,10 @@ async function generateImage() {
         }
     }
 
-    prompt = applyCurrentVisualIdentityToPrompt(applyStyle(prompt, s));
+    prompt = applyStyle(prompt, s);
+    if (!isUsingComfyReferenceWorkflow(s)) {
+        prompt = applyCurrentVisualIdentityToPrompt(prompt);
+    }
 
     if (s.appendQuality && s.qualityTags) {
         prompt = `${s.qualityTags}, ${prompt}`;

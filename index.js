@@ -1022,6 +1022,7 @@ async function callInternalStandaloneLLM(instruction, {
     label = "internal standalone prompt",
     prefill = "",
     returnMeta = false,
+    maxTokens = null,
 } = {}) {
     const requestLabel = String(label || quietName || "internal standalone prompt");
     const resolvedPrefill = String(prefill || "");
@@ -1054,6 +1055,7 @@ async function callInternalStandaloneLLM(instruction, {
                     prompt: instruction,
                     quietToLoud: false,
                     prefill: resolvedPrefill,
+                    max_tokens: Number.isFinite(Number(maxTokens)) ? Number(maxTokens) : undefined,
                 }), signal);
                 const details = extractLLMResponseDetails(response);
                 const meta = {
@@ -1085,6 +1087,7 @@ async function callInternalStandaloneLLM(instruction, {
                     quietToLoud: false,
                     trimNames: false,
                     prefill: resolvedPrefill,
+                    max_tokens: Number.isFinite(Number(maxTokens)) ? Number(maxTokens) : undefined,
                 }), signal);
                 const meta = {
                     text,
@@ -8387,13 +8390,6 @@ function showQuickGenerateMenu(anchor) {
             <button class="menu_button qig-palette-preset-menu__item" data-mode="yourself">Yourself</button>
             <button class="menu_button qig-palette-preset-menu__item" data-mode="myself">Myself</button>
             <button class="menu_button qig-palette-preset-menu__item" data-mode="custom">Custom</button>
-            <div id="qig-quick-inline-custom" style="display:none;padding:8px;">
-                <textarea id="qig-quick-custom-text" rows="3" placeholder="the girl sits on a table" style="width:100%;resize:vertical;"></textarea>
-                <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px;">
-                    <button id="qig-quick-custom-cancel" class="menu_button">Cancel</button>
-                    <button id="qig-quick-custom-run" class="menu_button">Generate</button>
-                </div>
-            </div>
         `;
         document.body.appendChild(menu);
 
@@ -8403,9 +8399,6 @@ function showQuickGenerateMenu(anchor) {
         menu.style.top = `${Math.max(8, rect.top - menu.offsetHeight - 8)}px`;
         menu.style.visibility = "visible";
 
-        const inlineCustom = menu.querySelector("#qig-quick-inline-custom");
-        const customText = menu.querySelector("#qig-quick-custom-text");
-
         const finish = (result) => {
             closeQuickGenerateMenu();
             resolve(result);
@@ -8414,24 +8407,9 @@ function showQuickGenerateMenu(anchor) {
         menu.querySelectorAll("[data-mode]").forEach(button => {
             button.onclick = () => {
                 const mode = button.getAttribute("data-mode");
-                if (mode === "custom") {
-                    inlineCustom.style.display = "block";
-                    customText.focus();
-                    return;
-                }
                 finish({ mode });
             };
         });
-        menu.querySelector("#qig-quick-custom-cancel").onclick = () => finish(null);
-        menu.querySelector("#qig-quick-custom-run").onclick = () => {
-            const text = customText.value.trim();
-            if (!text) {
-                toastr.warning("Enter a custom prompt first");
-                customText.focus();
-                return;
-            }
-            finish({ mode: "custom", description: text });
-        };
 
         const closeOnPointerDown = (event) => {
             if (menu.contains(event.target) || anchor?.contains(event.target)) return;
@@ -8451,6 +8429,52 @@ function showQuickGenerateMenu(anchor) {
             window.removeEventListener("scroll", closeQuickGenerateMenu, true);
             if (menu.parentElement) menu.parentElement.removeChild(menu);
         };
+    });
+}
+
+function showQuickCustomPromptDialog() {
+    return new Promise((resolve) => {
+        const popup = createPopup("qig-quick-custom-popup", "Custom Image Prompt", `
+            <div class="qig-popup-form" style="padding:16px;min-width:min(560px,92vw);">
+                <label for="qig-quick-custom-text">Prompt</label>
+                <textarea id="qig-quick-custom-text" rows="4" placeholder="the girl sits on a table"></textarea>
+                <div class="qig-dialog-actions" style="margin-top:14px;">
+                    <button id="qig-quick-custom-cancel" class="menu_button">Cancel</button>
+                    <button id="qig-quick-custom-run" class="menu_button">Generate</button>
+                </div>
+            </div>`, (popup) => {
+            const textEl = document.getElementById("qig-quick-custom-text");
+            const close = () => {
+                popup.style.display = "none";
+                resolve(null);
+            };
+            const use = () => {
+                const text = String(textEl.value || "").trim();
+                if (!text) {
+                    toastr.warning("Enter a custom prompt first");
+                    textEl.focus();
+                    return;
+                }
+                popup.style.display = "none";
+                resolve(text);
+            };
+
+            document.getElementById("qig-quick-custom-cancel").onclick = close;
+            document.getElementById("qig-quick-custom-run").onclick = use;
+            bindPopupDismiss(popup, close);
+
+            textEl.focus();
+            textEl.onkeydown = (e) => {
+                if (e.key === "Enter" && e.ctrlKey) {
+                    e.preventDefault();
+                    use();
+                }
+                if (e.key === "Escape") {
+                    e.preventDefault();
+                    close();
+                }
+            };
+        }, { resizable: false });
     });
 }
 
@@ -14363,9 +14387,10 @@ async function runQuickPaletteGeneration(anchor) {
     }
 
     const description = choice.mode === "custom"
-        ? String(choice.description || "").trim()
+        ? await showQuickCustomPromptDialog()
         : buildQuickGenerateDescription(choice.mode);
     if (!description) {
+        if (choice.mode === "custom") return;
         throw new Error("Could not build a prompt source for that quick action");
     }
     if (getSettings().confirmBeforeGenerate && !confirm("Generate image?")) return;

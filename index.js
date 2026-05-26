@@ -38,7 +38,7 @@ const FLUX2_KLEIN_CHARACTER_WORKFLOW = JSON.stringify({
     "3": { "inputs": { "clip_name": "qwen_3_8b_fp8mixed.safetensors", "type": "flux2", "device": "default" }, "class_type": "CLIPLoader", "_meta": { "title": "Flux2 Text Encoder" } },
     "4": {
         "inputs": {
-            "text": "Use the supplied reference image as the visual identity reference for the same character. Preserve the character's face, hair, eyes, distinctive accessories, and overall visual identity unless the scene request explicitly changes them. Create a coherent new image for this scene request: %prompt%",
+            "text": "Use the supplied reference image as the visual identity and rendering-style reference for the same character. Preserve the character's face, hair, eyes, distinctive accessories, overall visual identity, and the reference image's illustration/anime rendering approach unless the scene request explicitly changes them. Create a coherent new image for this scene request: %prompt%",
             "clip": ["3", 0]
         },
         "class_type": "CLIPTextEncode",
@@ -5265,6 +5265,22 @@ async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
                 log("Custom instruction missing {{scene}} placeholder; appending selected scene automatically");
                 instruction += `\n\n${isMultiMessage ? "SELECTED SCENE CONTEXT" : "SELECTED SCENE"}:\n${basePrompt}`;
             }
+        } else if (referenceDriven) {
+            instruction = `[REFERENCE IMAGE SCENE PROMPT TASK]
+
+The reference image already defines the character identity and art style.
+
+Return ONLY one concise image prompt for a reference-image edit workflow.
+
+Requirements:
+- Preserve the reference image's anime/illustration style and rendering approach.
+- Describe only the requested scene: action, pose, expression, framing, lighting, environment, and any explicitly requested outfit/state changes.
+- Do NOT restate the full character profile, face, hair, body, or accessories unless the scene explicitly changes or emphasizes them.
+- Do NOT add photorealistic, hyperrealistic, live-action, cinematic lens, skin-texture, or photography language unless the scene explicitly asks for it.
+- Keep the prompt compact and non-redundant.
+- Output only the prompt. No commentary.
+
+${isMultiMessage ? "SCENE CONTEXT:\n" : "SCENE: "}${basePrompt}`;
         } else if (wantsCustom) {
             log("Custom instruction selected but empty, falling back to tags style");
             // Fall through to default tags style below
@@ -14460,6 +14476,7 @@ async function generateImageFromPlainDescription() {
         useLLMPrompt: true,
         llmPromptStyle: request.promptStyle || baseSettings.llmPromptStyle || "tags",
     };
+    const referenceWorkflow = isUsingComfyReferenceWorkflow(s);
     const cancelCheckpoint = getCancelCheckpoint();
     const originalSeed = getGenerationSeedValue(s);
     const basePrompt = request.description;
@@ -14491,15 +14508,15 @@ async function generateImageFromPlainDescription() {
             prompt = applyCurrentVisualIdentityToPrompt(prompt);
         }
 
-        if (s.appendQuality && s.qualityTags) {
+        if (!referenceWorkflow && s.appendQuality && s.qualityTags) {
             prompt = `${s.qualityTags}, ${prompt}`;
         }
         let negative = resolvePrompt(s.negativePrompt);
 
         if (s.useSTStyle !== false) {
             const stStyle = getSTStyleSettings();
-            if (stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
-            if (stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
+            if (!referenceWorkflow && stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
+            if (!referenceWorkflow && stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
             if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
             if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
         }
@@ -14594,6 +14611,7 @@ async function generateImage() {
     const ctx = getContext();
     const activeMessageTarget = getTransientGenerationTarget(ctx);
     const useChatMessageScene = shouldUseChatMessageScene(s);
+    const referenceWorkflow = isUsingComfyReferenceWorkflow(s);
     const selectedSceneEntries = useChatMessageScene ? getSceneMessageEntries(s, ctx) : [];
     const sceneSelectionMessageIndex = selectedSceneEntries.length > 0 && Number.isInteger(selectedSceneEntries[selectedSceneEntries.length - 1]?.index)
         ? selectedSceneEntries[selectedSceneEntries.length - 1].index
@@ -14674,7 +14692,7 @@ async function generateImage() {
         prompt = applyCurrentVisualIdentityToPrompt(prompt);
     }
 
-    if (s.appendQuality && s.qualityTags) {
+    if (!referenceWorkflow && s.appendQuality && s.qualityTags) {
         prompt = `${s.qualityTags}, ${prompt}`;
     }
     let negative = resolvePrompt(s.negativePrompt);
@@ -14682,8 +14700,8 @@ async function generateImage() {
     // Apply ST Style panel settings (prefix, char-specific, negative)
     if (s.useSTStyle !== false) {
         const stStyle = getSTStyleSettings();
-        if (stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
-        if (stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
+        if (!referenceWorkflow && stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
+        if (!referenceWorkflow && stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
         if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
         if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
     }

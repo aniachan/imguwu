@@ -10572,7 +10572,7 @@ function buildExpressionPrompt(label, settings = getSettings()) {
     const identity = String(settings?.visualIdentity || "").trim()
         || truncateForContext(entry?.data?.description, 800)
         || "preserve the current character appearance";
-    const template = String(settings?.comfyExpressionPromptTemplate || defaultSettings.comfyExpressionPromptTemplate);
+    const template = String(defaultSettings.comfyExpressionPromptTemplate);
     return template
         .replace(/\{\{char\}\}/gi, characterName)
         .replace(/\{\{identity\}\}/gi, identity)
@@ -11962,11 +11962,7 @@ function createUI() {
                             <label for="qig-comfy-expression-labels">Labels</label>
                             <input id="qig-comfy-expression-labels" type="text" value="${esc(s.comfyExpressionLabels || defaultSettings.comfyExpressionLabels)}" placeholder="neutral, joy, anger">
                         </div>
-                        <div class="qig-field">
-                            <label for="qig-comfy-expression-template">ComfyUI prompt template</label>
-                            <textarea id="qig-comfy-expression-template" rows="3">${esc(s.comfyExpressionPromptTemplate || defaultSettings.comfyExpressionPromptTemplate)}</textarea>
-                            <small>Uses the active ComfyUI workflow. Template variables: {{char}}, {{identity}}, {{expression}}.</small>
-                        </div>
+                        <small>Expression sprites use the built-in ComfyUI prompt recipe for this extension.</small>
                         <button id="qig-comfy-expression-generate" class="menu_button qig-inline-action" title="Generate selected expression labels through ComfyUI and upload them as SillyTavern sprites"><span class="fa-solid fa-face-smile"></span><span>Generate Expressions</span></button>
                     </div>
                 </section>
@@ -13208,7 +13204,6 @@ function createUI() {
     };
     bind("qig-comfy-workflow", "comfyWorkflow");
     bind("qig-comfy-expression-labels", "comfyExpressionLabels");
-    bind("qig-comfy-expression-template", "comfyExpressionPromptTemplate");
     document.getElementById("qig-comfy-lora-add").onclick = addManualComfyLora;
     document.getElementById("qig-comfy-lora-add-name").onkeydown = e => {
         if (e.key === "Enter") {
@@ -14246,6 +14241,7 @@ function addInputButton() {
 async function generateImageInjectPalette() {
     if (isGenerating) return;
     const s = getSettings();
+    const referenceWorkflow = isUsingComfyReferenceWorkflow(s);
     if (s.confirmBeforeGenerate && !confirm("Generate image?")) return;
 
     const mySerial = ++_paletteInjectSerial;
@@ -14357,19 +14353,19 @@ async function generateImageInjectPalette() {
                     consumedMessagePrompts.add(extractedPrompt);
                 }
 
-                let negative = resolvePrompt(s.negativePrompt);
+                let negative = referenceWorkflow ? "" : resolvePrompt(s.negativePrompt);
                 prompt = applyStyle(prompt, s);
 
-                if (s.appendQuality && s.qualityTags) {
+                if (!referenceWorkflow && s.appendQuality && s.qualityTags) {
                     prompt = `${s.qualityTags}, ${prompt}`;
                 }
 
                 if (s.useSTStyle !== false) {
                     const stStyle = getSTStyleSettings();
-                    if (stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
-                    if (stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
-                    if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
-                    if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
+                    if (!referenceWorkflow && stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
+                    if (!referenceWorkflow && stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
+                    if (!referenceWorkflow && stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
+                    if (!referenceWorkflow && stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
                 }
 
                 const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
@@ -14511,14 +14507,14 @@ async function generateImageFromPlainDescription() {
         if (!referenceWorkflow && s.appendQuality && s.qualityTags) {
             prompt = `${s.qualityTags}, ${prompt}`;
         }
-        let negative = resolvePrompt(s.negativePrompt);
+        let negative = referenceWorkflow ? "" : resolvePrompt(s.negativePrompt);
 
         if (s.useSTStyle !== false) {
             const stStyle = getSTStyleSettings();
             if (!referenceWorkflow && stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
             if (!referenceWorkflow && stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
-            if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
-            if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
+            if (!referenceWorkflow && stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
+            if (!referenceWorkflow && stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
         }
 
         const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
@@ -14695,15 +14691,15 @@ async function generateImage() {
     if (!referenceWorkflow && s.appendQuality && s.qualityTags) {
         prompt = `${s.qualityTags}, ${prompt}`;
     }
-    let negative = resolvePrompt(s.negativePrompt);
+    let negative = referenceWorkflow ? "" : resolvePrompt(s.negativePrompt);
 
     // Apply ST Style panel settings (prefix, char-specific, negative)
     if (s.useSTStyle !== false) {
         const stStyle = getSTStyleSettings();
         if (!referenceWorkflow && stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
         if (!referenceWorkflow && stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
-        if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
-        if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
+        if (!referenceWorkflow && stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
+        if (!referenceWorkflow && stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
     }
 
     const llmSceneText = scenePrompt || basePrompt;

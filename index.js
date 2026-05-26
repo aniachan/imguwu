@@ -32,6 +32,8 @@ const LEGACY_INJECT_PROMPT_DEFAULT = 'When describing a scene visually, include 
 const LEGACY_INJECT_REGEX_DEFAULT = '<pic\\s+prompt="([^"]+)"\\s*/?>';
 const DUAL_INJECT_PROMPT_DEFAULT = 'When describing a scene visually, include an image tag using one of these formats:\n- Simple: <image>detailed visual description</image>\n- Alternative: <pic prompt="detailed visual description">\nUse this for important visual moments. The description should detail character appearances, poses, expressions, clothing, and setting.';
 const DUAL_INJECT_REGEX_DEFAULT = '<pic\\s+prompt="([^"]+)"\\s*/?>|<image>([\\s\\S]*?)</image>';
+const OFFICIAL_FLUX2_KLEIN_BASE_9B_MODEL = "flux-2-klein-base-9b-fp8.safetensors";
+const LEGACY_DEFAULT_FLUX2_MODEL = "flux-2-klein\\moodyDesireMix_v20EDITHEADSWAP.safetensors";
 const FLUX2_KLEIN_CHARACTER_WORKFLOW = JSON.stringify({
     "1": { "inputs": { "unet_name": "%model%", "weight_dtype": "default" }, "class_type": "UNETLoader", "_meta": { "title": "Flux2 Klein Edit Model" } },
     "2": { "inputs": { "model": ["1", 0] }, "class_type": "FluxKVCache", "_meta": { "title": "Flux KV Cache" } },
@@ -527,7 +529,7 @@ const defaultSettings = {
     // Local (A1111/ComfyUI)
     localUrl: "http://127.0.0.1:8188",
     localType: "comfyui",
-    localModel: "flux-2-klein\\moodyDesireMix_v20EDITHEADSWAP.safetensors",
+    localModel: OFFICIAL_FLUX2_KLEIN_BASE_9B_MODEL,
     localRefImage: "",
     visualIdentity: "",
     localDenoise: 0.75,
@@ -2944,6 +2946,9 @@ async function loadSettings() {
     const s = extension_settings[extensionName];
     s.provider = "local";
     s.localType = "comfyui";
+    if (!saved?.localModel || saved.localModel === LEGACY_DEFAULT_FLUX2_MODEL) {
+        s.localModel = OFFICIAL_FLUX2_KLEIN_BASE_9B_MODEL;
+    }
     s.paletteMode = normalizePaletteMode(s.paletteMode);
     const savedTagName = getInjectTagName(saved);
     s.injectTagName = savedTagName;
@@ -6551,9 +6556,13 @@ async function genLocal(prompt, negative, s, signal) {
         const builtinWorkflowJson = shouldUseZImageBuiltin ? ZIMAGE_TURBO_WORKFLOW : FLUX2_KLEIN_CHARACTER_WORKFLOW;
         const customWorkflowJson = s.comfyWorkflow && s.comfyWorkflow.trim() ? s.comfyWorkflow : "";
         const workflowJson = customWorkflowJson || builtinWorkflowJson;
+        const isBuiltinFlux2Workflow = !customWorkflowJson && !shouldUseZImageBuiltin;
         const workflowModel = !customWorkflowJson && shouldUseZImageBuiltin
             ? (s.comfyZImageModel || "z-image-turbo\\moodyProMix_zitV12DPO.safetensors")
-            : (s.localModel || "model.safetensors");
+            : (s.localModel || OFFICIAL_FLUX2_KLEIN_BASE_9B_MODEL || "model.safetensors");
+        const workflowSteps = isBuiltinFlux2Workflow
+            ? Math.max(Number(s.steps) || 0, 50)
+            : Number(s.steps);
 
         // Built-in graphs stay clean in UI; Custom Workflow JSON remains the escape hatch.
         if (workflowJson) {
@@ -6579,7 +6588,7 @@ async function genLocal(prompt, negative, s, signal) {
                     '%seed%': String(seed),
                     '%width%': String(s.width),
                     '%height%': String(s.height),
-                    '%steps%': String(s.steps),
+                    '%steps%': String(workflowSteps),
                     '%cfg%': String(s.cfgScale),
                     '%denoise%': String(denoise),
                     '%clip_skip%': String(clipSkip),
@@ -6595,7 +6604,7 @@ async function genLocal(prompt, negative, s, signal) {
                     '%seed%': seed,
                     '%width%': Number(s.width),
                     '%height%': Number(s.height),
-                    '%steps%': Number(s.steps),
+                    '%steps%': workflowSteps,
                     '%cfg%': Number(s.cfgScale),
                     '%denoise%': denoise,
                     '%clip_skip%': clipSkip,
@@ -6627,7 +6636,7 @@ async function genLocal(prompt, negative, s, signal) {
                     log(`ComfyUI: Injected ${injectedApiWorkflowLoras} LoRA(s) into API workflow loaders`);
                 }
 
-                log(`ComfyUI: Using ${customWorkflowJson ? "custom" : shouldUseZImageBuiltin ? "built-in Z-Image Turbo" : "built-in Flux.2 Klein reference"} workflow with ${Object.keys(customWorkflow).length} nodes`);
+                log(`ComfyUI: Using ${customWorkflowJson ? "custom" : shouldUseZImageBuiltin ? "built-in Z-Image Turbo" : "built-in Flux.2 Klein reference"} workflow with ${Object.keys(customWorkflow).length} nodes, model=${workflowModel}, steps=${workflowSteps}`);
 
                 const res = await corsFetch(`${baseUrl}/prompt`, {
                     method: "POST",
@@ -11167,10 +11176,10 @@ function applyFlux2KleinCharacterWorkflow() {
     Object.assign(s, {
         provider: "local",
         localType: "comfyui",
-        localModel: "flux-2-klein\\moodyDesireMix_v20EDITHEADSWAP.safetensors",
+        localModel: OFFICIAL_FLUX2_KLEIN_BASE_9B_MODEL,
         width: 832,
         height: 1216,
-        steps: 6,
+        steps: 50,
         cfgScale: 1,
         sampler: "euler",
         comfyWorkflow: "",

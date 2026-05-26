@@ -764,6 +764,7 @@ let _lastAutoGenerateSuppressionLogTs = 0;
 let paletteGenerateLockUntil = 0;
 let paletteCancelLockUntil = 0;
 let _palettePresetMenuCleanup = null;
+let _quickGenerateMenuCleanup = null;
 let _paletteInjectActive = false;
 let _paletteInjectSerial = 0;
 let transientGenerationTarget = null;
@@ -4885,7 +4886,12 @@ function findSecretKeyForId(secretId) {
     return null;
 }
 
-async function callOverrideLLM(instruction, systemPrompt = "", signal = null, { assistantPrefill = "", returnMeta = false } = {}) {
+async function callOverrideLLM(instruction, systemPrompt = "", signal = null, {
+    assistantPrefill = "",
+    returnMeta = false,
+    includePreset = true,
+    useRequestedPreset = true,
+} = {}) {
     const s = getSettings();
     const requestedMaxTokens = s.llmOverrideMaxTokens || 500;
     let CMRS = null;
@@ -4924,8 +4930,8 @@ async function callOverrideLLM(instruction, systemPrompt = "", signal = null, { 
     messages.push({ role: "user", content: instruction });
     if (assistantPrefill) messages.push({ role: "assistant", content: assistantPrefill });
 
-    const requestedPreset = s.llmOverridePreset || "";
-    log(`LLM Override: Using connection profile '${s.llmOverrideProfileId}' (preset: ${requestedPreset || "profile default"})`);
+    const requestedPreset = useRequestedPreset ? (s.llmOverridePreset || "") : "";
+    log(`LLM Override: Using connection profile '${s.llmOverrideProfileId}' (preset: ${includePreset ? (requestedPreset || "profile/default") : "disabled"})`);
 
     // Rotate to the profile's secret if it has one
     let previousSecretId = null;
@@ -4937,7 +4943,7 @@ async function callOverrideLLM(instruction, systemPrompt = "", signal = null, { 
         profile = CMRS.getProfile(s.llmOverrideProfileId);
 
         // Apply selected preset for this request only, then restore it.
-        if (profile && requestedPreset && profile.preset !== requestedPreset) {
+        if (includePreset && profile && requestedPreset && profile.preset !== requestedPreset) {
             originalProfilePreset = profile.preset;
             profile.preset = requestedPreset;
             presetOverridden = true;
@@ -4965,7 +4971,7 @@ async function callOverrideLLM(instruction, systemPrompt = "", signal = null, { 
             s.llmOverrideProfileId,
             messages,
             requestedMaxTokens,
-            { extractData: true, includePreset: true, stream: false }
+            { extractData: true, includePreset, stream: false }
         ), signal));
         const details = extractLLMResponseDetails(response);
         const meta = {
@@ -5426,8 +5432,10 @@ Tags:`;
         if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
             log("Using LLM Override for prompt generation");
             helperResponseMeta = await callOverrideLLM(instructionWithEntropy, "", signal, {
-                assistantPrefill: resolvedPrefill,
+                assistantPrefill: referenceDriven ? "" : resolvedPrefill,
                 returnMeta: true,
+                includePreset: !referenceDriven,
+                useRequestedPreset: !referenceDriven,
             });
             llmPrompt = helperResponseMeta?.text || "";
         } else {
@@ -5435,7 +5443,7 @@ Tags:`;
                 signal,
                 quietName: `ImageGen_${timestamp}`,
                 label: "image prompt generation request",
-                prefill: resolvedPrefill,
+                prefill: referenceDriven ? "" : resolvedPrefill,
                 returnMeta: true,
             });
             llmPrompt = helperResponseMeta?.text || "";
@@ -5483,6 +5491,10 @@ Tags:`;
             cleaned = await generateVisualPromptRecovery(basePrompt, s, signal);
         }
 
+        if (referenceDriven) {
+            cleaned = compactReferenceScenePrompt(cleaned, s);
+        }
+
         return cleaned || buildVisualPromptFallback(basePrompt);
     } catch (e) {
         if (e.name === "AbortError") throw e;
@@ -5511,6 +5523,40 @@ function buildVisualPromptFallback(scene) {
         .trim()
         .slice(0, 1200);
     return `Image prompt: visible scene illustration, ${visualScene || "the current scene"}, clear subjects, character appearance, pose, facial expression, setting, lighting, composition`;
+}
+
+function compactReferenceScenePrompt(text, settings = getSettings()) {
+    const s = settings || {};
+    const styleIsNone = !s.style || s.style === "none";
+    let cleaned = String(text || "")
+        .replace(/^\s*(?:image prompt|prompt|scene prompt|output)\s*:\s*/i, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    if (styleIsNone) {
+        cleaned = cleaned
+            .replace(/\b(?:photorealistic|photo-realistic|hyperrealistic|hyper-realistic|realistic|cinematic photography|professional photography|dslr|35mm|85mm|lens|bokeh|film still|skin texture|pores)\b/gi, "")
+            .replace(/\s+,/g, ",")
+            .replace(/,{2,}/g, ",");
+    }
+
+    const parts = cleaned
+        .split(/[,\n]/)
+        .map(part => part.trim())
+        .filter(Boolean);
+
+    const limited = [];
+    for (const part of parts) {
+        if (limited.includes(part)) continue;
+        limited.push(part);
+        if (limited.length >= 14) break;
+    }
+
+    cleaned = limited.join(", ").trim();
+    if (cleaned.length > 260) {
+        cleaned = cleaned.slice(0, 260).replace(/,\s*[^,]*$/, "").trim();
+    }
+    return cleaned;
 }
 
 async function generateVisualPromptRecovery(scene, settings, signal) {
@@ -8315,65 +8361,92 @@ function showPlainDescriptionDialog() {
     });
 }
 
-function showQuickGenerateDialog() {
+function closeQuickGenerateMenu() {
+    if (typeof _quickGenerateMenuCleanup === "function") {
+        _quickGenerateMenuCleanup();
+        _quickGenerateMenuCleanup = null;
+    }
+}
+
+function showQuickGenerateMenu(anchor) {
     return new Promise((resolve) => {
-        const popup = createPopup("qig-quick-generate-popup", "Quick Generate", `
-            <div class="qig-popup-form" style="padding:16px;min-width:min(560px,90vw);">
-                <div class="qig-dialog-actions" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;">
-                    <button id="qig-quick-current-scene" class="menu_button">Current Scene</button>
-                    <button id="qig-quick-yourself" class="menu_button">Yourself</button>
-                    <button id="qig-quick-myself" class="menu_button">Myself</button>
-                    <button id="qig-quick-custom" class="menu_button">Custom</button>
+        closeQuickGenerateMenu();
+        const menu = document.createElement("div");
+        menu.id = "qig-quick-generate-menu";
+        menu.className = "qig-palette-preset-menu";
+        menu.style.minWidth = "220px";
+        menu.innerHTML = `
+            <div class="qig-palette-preset-menu__title">Quick Generate</div>
+            <button class="menu_button qig-palette-preset-menu__item" data-mode="current_scene">Current Scene</button>
+            <button class="menu_button qig-palette-preset-menu__item" data-mode="yourself">Yourself</button>
+            <button class="menu_button qig-palette-preset-menu__item" data-mode="myself">Myself</button>
+            <button class="menu_button qig-palette-preset-menu__item" data-mode="custom">Custom</button>
+            <div id="qig-quick-inline-custom" style="display:none;padding:8px;">
+                <textarea id="qig-quick-custom-text" rows="3" placeholder="the girl sits on a table" style="width:100%;resize:vertical;"></textarea>
+                <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px;">
+                    <button id="qig-quick-custom-cancel" class="menu_button">Cancel</button>
+                    <button id="qig-quick-custom-run" class="menu_button">Generate</button>
                 </div>
-                <div id="qig-quick-custom-wrap" style="display:none;margin-top:12px;">
-                    <label for="qig-quick-custom-text">Custom Prompt</label>
-                    <textarea id="qig-quick-custom-text" rows="4" placeholder="the girl sits on a table"></textarea>
-                </div>
-                <div class="qig-dialog-actions" style="margin-top:14px;">
-                    <button id="qig-quick-cancel" class="menu_button">Cancel</button>
-                    <button id="qig-quick-run" class="menu_button" style="display:none;">Generate</button>
-                </div>
-            </div>`, (popupEl) => {
-            let selection = "current_scene";
-            const customWrap = document.getElementById("qig-quick-custom-wrap");
-            const customText = document.getElementById("qig-quick-custom-text");
-            const runBtn = document.getElementById("qig-quick-run");
+            </div>
+        `;
+        document.body.appendChild(menu);
 
-            const close = () => {
-                popupEl.style.display = "none";
-                resolve(null);
-            };
+        const rect = anchor.getBoundingClientRect();
+        menu.style.position = "fixed";
+        menu.style.left = `${Math.max(8, rect.left)}px`;
+        menu.style.top = `${Math.max(8, rect.top - menu.offsetHeight - 8)}px`;
+        menu.style.visibility = "visible";
 
-            const choose = (mode) => {
-                selection = mode;
-                const isCustom = mode === "custom";
-                if (customWrap) customWrap.style.display = isCustom ? "block" : "none";
-                if (runBtn) runBtn.style.display = isCustom ? "inline-flex" : "none";
-                if (isCustom) {
-                    customText?.focus();
-                } else {
-                    popupEl.style.display = "none";
-                    resolve({ mode });
-                }
-            };
+        const inlineCustom = menu.querySelector("#qig-quick-inline-custom");
+        const customText = menu.querySelector("#qig-quick-custom-text");
 
-            document.getElementById("qig-quick-current-scene").onclick = () => choose("current_scene");
-            document.getElementById("qig-quick-yourself").onclick = () => choose("yourself");
-            document.getElementById("qig-quick-myself").onclick = () => choose("myself");
-            document.getElementById("qig-quick-custom").onclick = () => choose("custom");
-            document.getElementById("qig-quick-cancel").onclick = close;
-            document.getElementById("qig-quick-run").onclick = () => {
-                const text = customText?.value?.trim() || "";
-                if (!text) {
-                    toastr.warning("Enter a custom prompt first");
-                    customText?.focus();
+        const finish = (result) => {
+            closeQuickGenerateMenu();
+            resolve(result);
+        };
+
+        menu.querySelectorAll("[data-mode]").forEach(button => {
+            button.onclick = () => {
+                const mode = button.getAttribute("data-mode");
+                if (mode === "custom") {
+                    inlineCustom.style.display = "block";
+                    customText.focus();
                     return;
                 }
-                popupEl.style.display = "none";
-                resolve({ mode: selection, description: text });
+                finish({ mode });
             };
-            bindPopupDismiss(popupEl, close);
         });
+        menu.querySelector("#qig-quick-custom-cancel").onclick = () => finish(null);
+        menu.querySelector("#qig-quick-custom-run").onclick = () => {
+            const text = customText.value.trim();
+            if (!text) {
+                toastr.warning("Enter a custom prompt first");
+                customText.focus();
+                return;
+            }
+            finish({ mode: "custom", description: text });
+        };
+
+        const closeOnPointerDown = (event) => {
+            if (menu.contains(event.target) || anchor?.contains(event.target)) return;
+            finish(null);
+        };
+        const closeOnEscape = (event) => {
+            if (event.key === "Escape") finish(null);
+        };
+
+        document.addEventListener("pointerdown", closeOnPointerDown, true);
+        document.addEventListener("keydown", closeOnEscape, true);
+        window.addEventListener("resize", closeQuickGenerateMenu, true);
+        window.addEventListener("scroll", closeQuickGenerateMenu, true);
+
+        _quickGenerateMenuCleanup = () => {
+            document.removeEventListener("pointerdown", closeOnPointerDown, true);
+            document.removeEventListener("keydown", closeOnEscape, true);
+            window.removeEventListener("resize", closeQuickGenerateMenu, true);
+            window.removeEventListener("scroll", closeQuickGenerateMenu, true);
+            if (menu.parentElement) menu.parentElement.removeChild(menu);
+        };
     });
 }
 
@@ -14272,11 +14345,11 @@ function runConfiguredPaletteGeneration() {
     return generateImage();
 }
 
-async function runQuickPaletteGeneration() {
+async function runQuickPaletteGeneration(anchor) {
     const mode = normalizePaletteMode(getSettings()?.paletteMode);
     if (mode === "inject") return generateImageInjectPalette();
 
-    const choice = await showQuickGenerateDialog();
+    const choice = await showQuickGenerateMenu(anchor);
     if (!choice) return;
 
     if (choice.mode === "current_scene") {
@@ -14345,7 +14418,7 @@ function addInputButton() {
         }
         paletteGenerateLockUntil = now + PALETTE_GENERATE_LOCK_MS;
         if (_autoGenTimeout) { clearTimeout(_autoGenTimeout); _autoGenTimeout = null; }
-        runQuickPaletteGeneration().catch((e) => {
+        runQuickPaletteGeneration(btn).catch((e) => {
             log(`Quick palette generation failed: ${e.message}`);
             toastr.error("Quick generate failed: " + e.message);
             if (isGenerating) endGeneration({ disableGenerateButton: true });

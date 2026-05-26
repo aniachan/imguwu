@@ -3616,7 +3616,13 @@ function getCharacterVisualIdentity(charId) {
     if (String(charId) === String(getCurrentCharId()) && getSettings()?.visualIdentity) {
         return truncateForContext(getSettings().visualIdentity, 1000);
     }
-    return truncateForContext(charSettings?.[String(charId)]?.visualIdentity, 1000);
+    const ctx = getContext();
+    const entry = getCharacterEntryById(charId, ctx);
+    const stored = getStoredCharacterValue(charSettings, entry, {
+        ...ctx,
+        characterId: entry?.id ?? charId,
+    });
+    return truncateForContext(stored?.value?.visualIdentity, 1000);
 }
 
 function prependVisualIdentity(visualIdentity, cardDescription) {
@@ -10008,11 +10014,48 @@ function getCurrentCharName() {
     return entry?.name || entry?.avatar || null;
 }
 
+function getCharacterStorageKey(entry = getCurrentCharacterEntry(), ctx = getContext()) {
+    const avatar = String(entry?.avatar || entry?.data?.avatar || "").trim();
+    if (avatar) return `avatar:${avatar}`;
+
+    const dataId = normalizeContextLookupValue(entry?.data?.id);
+    if (dataId) return `dataid:${dataId}`;
+
+    const charId = ctx?.characterId ?? entry?.id ?? null;
+    if (charId != null) return `char:${charId}`;
+    return null;
+}
+
+function getCharacterStorageLookupKeys(entry = getCurrentCharacterEntry(), ctx = getContext()) {
+    const keys = [];
+    const preferred = getCharacterStorageKey(entry, ctx);
+    if (preferred) keys.push(preferred);
+
+    const charId = ctx?.characterId ?? entry?.id ?? null;
+    if (charId != null) keys.push(String(charId));
+
+    const dataId = normalizeContextLookupValue(entry?.data?.id);
+    if (dataId) keys.push(`dataid:${dataId}`);
+
+    return uniqueStringList(keys.filter(Boolean));
+}
+
+function getStoredCharacterValue(store, entry = getCurrentCharacterEntry(), ctx = getContext()) {
+    if (!store || typeof store !== "object") return null;
+    for (const key of getCharacterStorageLookupKeys(entry, ctx)) {
+        if (Object.prototype.hasOwnProperty.call(store, key)) {
+            return { key, value: store[key] };
+        }
+    }
+    return null;
+}
+
 function getWorkspaceContextSignature() {
     const ctx = getContext?.();
     const entry = getCurrentCharacterEntry();
     const avatar = String(entry?.avatar || entry?.data?.avatar || "").trim();
     return JSON.stringify({
+        storageKey: getCharacterStorageKey(entry, ctx),
         characterId: ctx?.characterId ?? null,
         groupId: ctx?.groupId ?? null,
         avatar,
@@ -10268,10 +10311,12 @@ function ensureContextualFilterManagerScopeSelection(scopeOptions = getContextua
 }
 
 function saveCharSettings() {
-    const charId = getCurrentCharId();
-    if (charId == null) return;
+    const ctx = getContext();
+    const entry = getCurrentCharacterEntry(ctx);
+    const storageKey = getCharacterStorageKey(entry, ctx);
+    if (!storageKey) return;
     const s = getSettings();
-    charSettings[charId] = {
+    charSettings[storageKey] = {
         prompt: s.prompt,
         negativePrompt: s.negativePrompt,
         style: s.style,
@@ -10282,9 +10327,9 @@ function saveCharSettings() {
     const savedCharSettings = safeSetStorage("qig_char_settings", JSON.stringify(charSettings), "Failed to save character settings. Browser storage may be full.");
     const refs = getCurrentRefImages(s);
     if (refs.length > 0) {
-        charRefImages[charId] = refs;
+        charRefImages[storageKey] = refs;
     } else {
-        delete charRefImages[charId];
+        delete charRefImages[storageKey];
     }
     const savedCharRefs = safeSetStorage("qig_char_ref_images", JSON.stringify(charRefImages), "Failed to save character reference images. Browser storage may be full.");
     if (!savedCharSettings || !savedCharRefs) return;
@@ -10526,9 +10571,11 @@ async function generateComfyExpressionSprites() {
 
 function loadCharSettings() {
     const s = getSettings();
-    const charId = getCurrentCharId();
+    const ctx = getContext();
+    const entry = getCurrentCharacterEntry(ctx);
+    const storageKey = getCharacterStorageKey(entry, ctx);
 
-    if (charId == null) {
+    if (!storageKey) {
         if (charSettingsBaseState) {
             applyCharScopedState(charSettingsBaseState, s);
             saveSettingsDebounced();
@@ -10538,16 +10585,18 @@ function loadCharSettings() {
         return false;
     }
 
-    if (charSettingsBaseCharId !== charId) {
+    if (charSettingsBaseCharId !== storageKey) {
         if (charSettingsBaseState) {
             applyCharScopedState(charSettingsBaseState, s);
         }
         charSettingsBaseState = cloneCharScopedState(s);
-        charSettingsBaseCharId = charId;
+        charSettingsBaseCharId = storageKey;
     }
 
-    const hasSettings = !!charSettings[charId];
-    const refs = Array.isArray(charRefImages[charId]) ? charRefImages[charId] : [];
+    const storedSettings = getStoredCharacterValue(charSettings, entry, ctx);
+    const storedRefs = getStoredCharacterValue(charRefImages, entry, ctx);
+    const hasSettings = !!storedSettings?.value;
+    const refs = Array.isArray(storedRefs?.value) ? storedRefs.value : [];
     const hasRefs = refs.length > 0;
     if (!hasSettings && !hasRefs) {
         applyCharScopedState(charSettingsBaseState, s);
@@ -10556,7 +10605,7 @@ function loadCharSettings() {
         return false;
     }
 
-    const cs = charSettings[charId] || {};
+    const cs = storedSettings?.value || {};
     if (Object.prototype.hasOwnProperty.call(cs, "prompt")) {
         s.prompt = cs.prompt ?? "";
         const promptEl = document.getElementById("qig-prompt");

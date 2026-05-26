@@ -8315,6 +8315,98 @@ function showPlainDescriptionDialog() {
     });
 }
 
+function showQuickGenerateDialog() {
+    return new Promise((resolve) => {
+        const popup = createPopup("qig-quick-generate-popup", "Quick Generate", `
+            <div class="qig-popup-form" style="padding:16px;min-width:min(560px,90vw);">
+                <div class="qig-dialog-actions" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;">
+                    <button id="qig-quick-current-scene" class="menu_button">Current Scene</button>
+                    <button id="qig-quick-yourself" class="menu_button">Yourself</button>
+                    <button id="qig-quick-myself" class="menu_button">Myself</button>
+                    <button id="qig-quick-custom" class="menu_button">Custom</button>
+                </div>
+                <div id="qig-quick-custom-wrap" style="display:none;margin-top:12px;">
+                    <label for="qig-quick-custom-text">Custom Prompt</label>
+                    <textarea id="qig-quick-custom-text" rows="4" placeholder="the girl sits on a table"></textarea>
+                </div>
+                <div class="qig-dialog-actions" style="margin-top:14px;">
+                    <button id="qig-quick-cancel" class="menu_button">Cancel</button>
+                    <button id="qig-quick-run" class="menu_button" style="display:none;">Generate</button>
+                </div>
+            </div>`, (popupEl) => {
+            let selection = "current_scene";
+            const customWrap = document.getElementById("qig-quick-custom-wrap");
+            const customText = document.getElementById("qig-quick-custom-text");
+            const runBtn = document.getElementById("qig-quick-run");
+
+            const close = () => {
+                popupEl.style.display = "none";
+                resolve(null);
+            };
+
+            const choose = (mode) => {
+                selection = mode;
+                const isCustom = mode === "custom";
+                if (customWrap) customWrap.style.display = isCustom ? "block" : "none";
+                if (runBtn) runBtn.style.display = isCustom ? "inline-flex" : "none";
+                if (isCustom) {
+                    customText?.focus();
+                } else {
+                    popupEl.style.display = "none";
+                    resolve({ mode });
+                }
+            };
+
+            document.getElementById("qig-quick-current-scene").onclick = () => choose("current_scene");
+            document.getElementById("qig-quick-yourself").onclick = () => choose("yourself");
+            document.getElementById("qig-quick-myself").onclick = () => choose("myself");
+            document.getElementById("qig-quick-custom").onclick = () => choose("custom");
+            document.getElementById("qig-quick-cancel").onclick = close;
+            document.getElementById("qig-quick-run").onclick = () => {
+                const text = customText?.value?.trim() || "";
+                if (!text) {
+                    toastr.warning("Enter a custom prompt first");
+                    customText?.focus();
+                    return;
+                }
+                popupEl.style.display = "none";
+                resolve({ mode: selection, description: text });
+            };
+            bindPopupDismiss(popupEl, close);
+        });
+    });
+}
+
+function buildQuickGenerateDescription(mode, ctx = getContext()) {
+    const profile = resolveLLMPromptProfileContext(ctx);
+    const currentEntry = getCurrentCharacterEntry(ctx);
+    const characterName = String(currentEntry?.name || profile.primaryCharName || "character").trim();
+    const characterDesc = String(profile.charDescResolved || "").trim();
+    const userName = String(profile.userName || "user").trim();
+    const userDesc = String(profile.userDescResolved || "").trim();
+
+    if (mode === "yourself") {
+        return [
+            `${characterName} alone.`,
+            characterDesc ? `Focus on ${characterName}'s appearance and presence: ${truncateForContext(characterDesc, 500)}.` : "",
+            "Single subject, no other characters."
+        ].filter(Boolean).join(" ");
+    }
+
+    if (mode === "myself") {
+        if (!userDesc) {
+            throw new Error("No user persona description is available for 'Myself'");
+        }
+        return [
+            `${userName} alone.`,
+            `Focus on ${userName}'s appearance and presence: ${truncateForContext(userDesc, 500)}.`,
+            "Single subject, no other characters."
+        ].filter(Boolean).join(" ");
+    }
+
+    return "";
+}
+
 function showParagraphPicker(messageText) {
     return new Promise((resolve) => {
         const paragraphs = messageText.split(/\n\n+/).filter(p => p.trim());
@@ -14180,6 +14272,32 @@ function runConfiguredPaletteGeneration() {
     return generateImage();
 }
 
+async function runQuickPaletteGeneration() {
+    const mode = normalizePaletteMode(getSettings()?.paletteMode);
+    if (mode === "inject") return generateImageInjectPalette();
+
+    const choice = await showQuickGenerateDialog();
+    if (!choice) return;
+
+    if (choice.mode === "current_scene") {
+        return generateImage();
+    }
+
+    const description = choice.mode === "custom"
+        ? String(choice.description || "").trim()
+        : buildQuickGenerateDescription(choice.mode);
+    if (!description) {
+        throw new Error("Could not build a prompt source for that quick action");
+    }
+    if (getSettings().confirmBeforeGenerate && !confirm("Generate image?")) return;
+
+    return generateImageFromDescriptionRequest({
+        description,
+        promptStyle: getSettings().llmPromptStyle || "natural",
+        editPrompt: !!getSettings().llmEditPrompt,
+    });
+}
+
 function closeImgUwuWorkspace() {
     stopWorkspaceContextSync();
     document.getElementById("qig-workspace-overlay")?.remove();
@@ -14227,7 +14345,11 @@ function addInputButton() {
         }
         paletteGenerateLockUntil = now + PALETTE_GENERATE_LOCK_MS;
         if (_autoGenTimeout) { clearTimeout(_autoGenTimeout); _autoGenTimeout = null; }
-        runConfiguredPaletteGeneration();
+        runQuickPaletteGeneration().catch((e) => {
+            log(`Quick palette generation failed: ${e.message}`);
+            toastr.error("Quick generate failed: " + e.message);
+            if (isGenerating) endGeneration({ disableGenerateButton: true });
+        });
     };
     btn.oncontextmenu = showPalettePresetMenu;
 
@@ -14457,13 +14579,8 @@ async function generateImageInjectPalette() {
     }
 }
 
-async function generateImageFromPlainDescription() {
-    if (isGenerating) return;
-
-    const request = await showPlainDescriptionDialog();
-    if (!request) return;
-    if (getSettings().confirmBeforeGenerate && !confirm("Generate image?")) return;
-
+async function generateImageFromDescriptionRequest(request) {
+    if (!request?.description) return;
     beginGeneration({ disableGenerateButton: true, clearPendingAuto: true });
     const baseSettings = getSettings();
     const s = {
@@ -14595,6 +14712,15 @@ async function generateImageFromPlainDescription() {
         clearStyleCache();
         log("Plain description: Cleared caches after generation");
     }
+}
+
+async function generateImageFromPlainDescription() {
+    if (isGenerating) return;
+
+    const request = await showPlainDescriptionDialog();
+    if (!request) return;
+    if (getSettings().confirmBeforeGenerate && !confirm("Generate image?")) return;
+    return generateImageFromDescriptionRequest(request);
 }
 
 async function generateImage() {

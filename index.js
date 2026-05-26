@@ -10024,6 +10024,22 @@ function applyCharScopedState(state, s = getSettings()) {
     renderNanogptRefImages();
 }
 
+function clearCharacterScopedFields(s = getSettings()) {
+    s.visualIdentity = "";
+    s.localRefImage = "";
+    s.proxyRefImages = [];
+    s.nanobananaRefImages = [];
+    s.nanogptRefImages = [];
+
+    const visualIdentityEl = document.getElementById("qig-visual-identity");
+    if (visualIdentityEl) visualIdentityEl.value = "";
+
+    syncLocalRefImageUI(s);
+    renderRefImages();
+    renderNanobananaRefImages();
+    renderNanogptRefImages();
+}
+
 function getCurrentCharId() {
     const ctx = getContext();
     return ctx?.characterId ?? null;
@@ -10625,6 +10641,7 @@ function loadCharSettings() {
     const hasRefs = refs.length > 0;
     if (!hasSettings && !hasRefs) {
         applyCharScopedState(charSettingsBaseState, s);
+        clearCharacterScopedFields(s);
         saveSettingsDebounced();
         renderContextualFilters();
         return false;

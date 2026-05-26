@@ -4891,9 +4891,10 @@ async function callOverrideLLM(instruction, systemPrompt = "", signal = null, {
     returnMeta = false,
     includePreset = true,
     useRequestedPreset = true,
+    maxTokens = null,
 } = {}) {
     const s = getSettings();
-    const requestedMaxTokens = s.llmOverrideMaxTokens || 500;
+    const requestedMaxTokens = Number.isFinite(Number(maxTokens)) ? Number(maxTokens) : (s.llmOverrideMaxTokens || 500);
     let CMRS = null;
     try {
         const ctx = getContext();
@@ -5436,6 +5437,7 @@ Tags:`;
                 returnMeta: true,
                 includePreset: !referenceDriven,
                 useRequestedPreset: !referenceDriven,
+                maxTokens: referenceDriven ? 120 : null,
             });
             llmPrompt = helperResponseMeta?.text || "";
         } else {
@@ -5541,7 +5543,7 @@ function compactReferenceScenePrompt(text, settings = getSettings()) {
     }
 
     const parts = cleaned
-        .split(/[,\n]/)
+        .split(/[,\n.;]+/)
         .map(part => part.trim())
         .filter(Boolean);
 
@@ -5553,6 +5555,10 @@ function compactReferenceScenePrompt(text, settings = getSettings()) {
     }
 
     cleaned = limited.join(", ").trim();
+    const words = cleaned.split(/\s+/).filter(Boolean);
+    if (words.length > 42) {
+        cleaned = words.slice(0, 42).join(" ").replace(/,\s*[^,]*$/, "").trim();
+    }
     if (cleaned.length > 260) {
         cleaned = cleaned.slice(0, 260).replace(/,\s*[^,]*$/, "").trim();
     }
@@ -8437,13 +8443,11 @@ function showQuickGenerateMenu(anchor) {
 
         document.addEventListener("pointerdown", closeOnPointerDown, true);
         document.addEventListener("keydown", closeOnEscape, true);
-        window.addEventListener("resize", closeQuickGenerateMenu, true);
         window.addEventListener("scroll", closeQuickGenerateMenu, true);
 
         _quickGenerateMenuCleanup = () => {
             document.removeEventListener("pointerdown", closeOnPointerDown, true);
             document.removeEventListener("keydown", closeOnEscape, true);
-            window.removeEventListener("resize", closeQuickGenerateMenu, true);
             window.removeEventListener("scroll", closeQuickGenerateMenu, true);
             if (menu.parentElement) menu.parentElement.removeChild(menu);
         };
@@ -13213,6 +13217,8 @@ function createUI() {
     renderProfileSelect();
     renderComfyWorkflowPresets();
     renderContextualFilters();
+    populateConnectionProfiles("qig-llm-override-profile", s.llmOverrideProfileId);
+    populatePresetList("qig-llm-override-preset-select", s.llmOverridePreset);
     document.getElementById("qig-comfy-flux2-character-workflow").onclick = applyFlux2KleinCharacterWorkflow;
     document.getElementById("qig-comfy-zimage-workflow").onclick = applyZImageTurboWorkflow;
     renderComfyLoraManager();

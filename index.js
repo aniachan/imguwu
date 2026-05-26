@@ -2693,7 +2693,22 @@ function showStatus(msg) {
         cachedElements["qig-status"] = status;
     }
     if (msg) {
-        status.textContent = msg;
+        if (typeof msg === "object" && msg !== null) {
+            const text = String(msg.text || "").trim();
+            const rawProgress = Number(msg.progress);
+            const hasProgress = Number.isFinite(rawProgress);
+            const progress = hasProgress ? Math.max(0, Math.min(1, rawProgress)) : 0;
+            status.innerHTML = hasProgress
+                ? `<div style="display:flex;flex-direction:column;gap:6px;min-width:240px;">
+                        <div>${escapeHtml(text || "Generating...")}</div>
+                        <div style="width:100%;height:8px;border-radius:999px;background:rgba(255,255,255,0.14);overflow:hidden;">
+                            <div style="width:${Math.round(progress * 100)}%;height:100%;background:linear-gradient(90deg,#d7ff6f 0%,#8ddcff 100%);transition:width 200ms ease;"></div>
+                        </div>
+                    </div>`
+                : escapeHtml(text || "");
+        } else {
+            status.textContent = String(msg);
+        }
         status.style.display = "block";
     } else {
         status.style.display = "none";
@@ -5292,11 +5307,13 @@ The reference image already defines the character identity and art style.
 Return ONLY one concise image prompt for a reference-image edit workflow.
 
 Requirements:
-- Preserve the reference image's anime/illustration style and rendering approach.
-- Describe only the requested scene: action, pose, expression, framing, lighting, environment, and any explicitly requested outfit/state changes.
-- Do NOT restate the full character profile, face, hair, body, or accessories unless the scene explicitly changes or emphasizes them.
+- Treat the prompt as an edit request, not a full redraw description.
+- Describe only the delta from the reference image: action, pose, expression, framing, lighting, environment, and any explicitly requested outfit/state changes.
+- Do NOT describe the base character appearance, face, hair, body, age, species, accessories, or overall identity unless the scene explicitly changes one of those things.
+- Do NOT describe style unless the scene explicitly asks for a different style.
 - Do NOT add photorealistic, hyperrealistic, live-action, cinematic lens, skin-texture, or photography language unless the scene explicitly asks for it.
 - Keep the prompt compact and non-redundant.
+- Prefer short edit-style phrasing such as "kneeling, looking up at camera, warm indoor light" over full sentences.
 - Output only the prompt. No commentary.
 
 ${isMultiMessage ? "SCENE CONTEXT:\n" : "SCENE: "}${basePrompt}`;
@@ -5550,6 +5567,7 @@ function compactReferenceScenePrompt(text, settings = getSettings()) {
 
     cleaned = cleaned
         .replace(/\b(?:masterpiece|best quality|high quality|highly detailed|ultra detailed|sharp focus|8k|4k|absurdres|highres)\b/gi, "")
+        .replace(/\b(?:same character|same girl|same woman|same man|reference image|from the reference image|preserve (?:the )?(?:existing )?(?:character|identity|appearance)|current character|referenced subject identity)\b/gi, "")
         .replace(/\s+,/g, ",")
         .replace(/,{2,}/g, ",");
 
@@ -5587,6 +5605,7 @@ function finalizeReferenceWorkflowPrompt(prompt, settings = getSettings()) {
     let cleaned = compactReferenceScenePrompt(prompt, settings);
     cleaned = cleaned
         .replace(/\b(?:anime style|illustration style|rendering style)\b/gi, "")
+        .replace(/\b(?:character appearance|full body description|detailed appearance)\b/gi, "")
         .replace(/\s+,/g, ",")
         .replace(/,{2,}/g, ",")
         .replace(/^,\s*|\s*,\s*$/g, "")
@@ -6487,6 +6506,31 @@ function getComfyHistoryImageUrls(baseUrl, image) {
     ];
 }
 
+async function fetchComfyProgress(baseUrl, signal) {
+    try {
+        const res = await corsFetch(`${baseUrl}/progress`, { signal });
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (typeof data?.progress === "number") {
+            return {
+                progress: Math.max(0, Math.min(1, data.progress)),
+                step: data?.current_step,
+                totalSteps: data?.total_steps,
+            };
+        }
+        if (typeof data?.value === "number" && typeof data?.max === "number" && data.max > 0) {
+            return {
+                progress: Math.max(0, Math.min(1, data.value / data.max)),
+                step: data.value,
+                totalSteps: data.max,
+            };
+        }
+    } catch (e) {
+        if (e?.name === "AbortError") throw e;
+    }
+    return null;
+}
+
 async function genLocal(prompt, negative, s, signal) {
     const baseUrl = s.localUrl.replace(/\/$/, "");
 
@@ -6516,7 +6560,16 @@ async function genLocal(prompt, negative, s, signal) {
             for (let i = 0; i < comfyTimeoutSeconds; i++) {
                 if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
                 await new Promise(r => setTimeout(r, 1000));
-                showStatus(`Generating... (waiting ${i + 1}s)`);
+                const progressInfo = await fetchComfyProgress(baseUrl, signal);
+                const fallbackProgress = Math.min(0.95, (i + 1) / comfyTimeoutSeconds);
+                const progress = progressInfo?.progress ?? fallbackProgress;
+                const stepText = progressInfo?.step && progressInfo?.totalSteps
+                    ? ` (${progressInfo.step}/${progressInfo.totalSteps} steps)`
+                    : "";
+                showStatus({
+                    text: `Generating... ${Math.max(1, Math.round(progress * 100))}%${stepText}`,
+                    progress,
+                });
                 let hist;
                 try {
                     const histRes = await corsFetch(`${baseUrl}/history/${promptId}`, { signal });
@@ -8512,6 +8565,7 @@ function showQuickCustomPromptDialog() {
 
 function buildQuickGenerateDescription(mode, ctx = getContext()) {
     const profile = resolveLLMPromptProfileContext(ctx);
+    const referenceDriven = isUsingComfyReferenceWorkflow();
     const currentEntry = getCurrentCharacterEntry(ctx);
     const characterName = String(currentEntry?.name || profile.primaryCharName || "character").trim();
     const characterDesc = String(profile.charDescResolved || "").trim();
@@ -8519,6 +8573,9 @@ function buildQuickGenerateDescription(mode, ctx = getContext()) {
     const userDesc = String(profile.userDescResolved || "").trim();
 
     if (mode === "yourself") {
+        if (referenceDriven) {
+            return "single subject, alone, casual pose, looking at viewer, preserve the existing character from the reference image, no other characters";
+        }
         return [
             `${characterName} alone.`,
             characterDesc ? `Focus on ${characterName}'s appearance and presence: ${truncateForContext(characterDesc, 500)}.` : "",
@@ -8527,6 +8584,9 @@ function buildQuickGenerateDescription(mode, ctx = getContext()) {
     }
 
     if (mode === "myself") {
+        if (referenceDriven) {
+            return "single subject, alone, casual pose, looking at viewer, preserve the referenced subject identity, no other characters";
+        }
         if (!userDesc) {
             throw new Error("No user persona description is available for 'Myself'");
         }

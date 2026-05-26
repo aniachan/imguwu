@@ -38,15 +38,15 @@ const FLUX2_KLEIN_CHARACTER_WORKFLOW = JSON.stringify({
     "9": { "inputs": { "filename_prefix": "qig_flux2_character", "images": ["75:65", 0] }, "class_type": "SaveImage", "_meta": { "title": "Save Image" } },
     "76": { "inputs": { "image": "%reference_image%" }, "class_type": "LoadImage", "_meta": { "title": "Load Image" } },
     "75:61": { "inputs": { "sampler_name": "euler" }, "class_type": "KSamplerSelect", "_meta": { "title": "KSamplerSelect" } },
-    "75:62": { "inputs": { "steps": "%steps%", "width": ["75:100", 0], "height": ["75:100", 1] }, "class_type": "Flux2Scheduler", "_meta": { "title": "Flux2Scheduler" } },
-    "75:63": { "inputs": { "cfg": "%cfg%", "model": ["75:70", 0], "positive": ["75:124", 0], "negative": ["75:122", 0] }, "class_type": "CFGGuider", "_meta": { "title": "CFGGuider" } },
+    "75:62": { "inputs": { "steps": 20, "width": ["75:100", 0], "height": ["75:100", 1] }, "class_type": "Flux2Scheduler", "_meta": { "title": "Flux2Scheduler" } },
+    "75:63": { "inputs": { "cfg": 5, "model": ["75:70", 0], "positive": ["75:124", 0], "negative": ["75:122", 0] }, "class_type": "CFGGuider", "_meta": { "title": "CFGGuider" } },
     "75:64": { "inputs": { "noise": ["75:73", 0], "guider": ["75:63", 0], "sampler": ["75:61", 0], "sigmas": ["75:62", 0], "latent_image": ["75:66", 0] }, "class_type": "SamplerCustomAdvanced", "_meta": { "title": "SamplerCustomAdvanced" } },
     "75:65": { "inputs": { "samples": ["75:64", 0], "vae": ["75:72", 0] }, "class_type": "VAEDecode", "_meta": { "title": "VAE Decode" } },
     "75:73": { "inputs": { "noise_seed": "%seed%" }, "class_type": "RandomNoise", "_meta": { "title": "RandomNoise" } },
-    "75:70": { "inputs": { "unet_name": "%model%", "weight_dtype": "default" }, "class_type": "UNETLoader", "_meta": { "title": "Load Diffusion Model" } },
+    "75:70": { "inputs": { "unet_name": "flux-2-klein\\moodyDesireMix_v20EDITHEADSWAP.safetensors", "weight_dtype": "default" }, "class_type": "UNETLoader", "_meta": { "title": "Load Diffusion Model" } },
     "75:71": { "inputs": { "clip_name": "qwen_3_8b_fp8mixed.safetensors", "type": "flux2", "device": "default" }, "class_type": "CLIPLoader", "_meta": { "title": "Load CLIP" } },
     "75:74": { "inputs": { "text": "%prompt%", "clip": ["75:71", 0] }, "class_type": "CLIPTextEncode", "_meta": { "title": "CLIP Text Encode (Positive Prompt)" } },
-    "75:67": { "inputs": { "text": "%negative%", "clip": ["75:71", 0] }, "class_type": "CLIPTextEncode", "_meta": { "title": "CLIP Text Encode (Negative Prompt)" } },
+    "75:67": { "inputs": { "text": "", "clip": ["75:71", 0] }, "class_type": "CLIPTextEncode", "_meta": { "title": "CLIP Text Encode (Negative Prompt)" } },
     "75:72": { "inputs": { "vae_name": "full_encoder_small_decoder.safetensors" }, "class_type": "VAELoader", "_meta": { "title": "Load VAE" } },
     "75:66": { "inputs": { "width": ["75:100", 0], "height": ["75:100", 1], "batch_size": 1 }, "class_type": "EmptyFlux2LatentImage", "_meta": { "title": "Empty Flux 2 Latent" } },
     "75:80": { "inputs": { "upscale_method": "lanczos", "megapixels": 1, "resolution_steps": 1, "image": ["76", 0] }, "class_type": "ImageScaleToTotalPixels", "_meta": { "title": "ImageScaleToTotalPixels" } },
@@ -6560,10 +6560,11 @@ async function genLocal(prompt, negative, s, signal) {
         const builtinWorkflowJson = shouldUseZImageBuiltin ? ZIMAGE_TURBO_WORKFLOW : FLUX2_KLEIN_CHARACTER_WORKFLOW;
         const customWorkflowJson = s.comfyWorkflow && s.comfyWorkflow.trim() ? s.comfyWorkflow : "";
         const workflowJson = customWorkflowJson || builtinWorkflowJson;
+        const isBuiltinFlux2Workflow = !customWorkflowJson && !shouldUseZImageBuiltin;
         const workflowModel = !customWorkflowJson && shouldUseZImageBuiltin
             ? (s.comfyZImageModel || "z-image-turbo\\moodyProMix_zitV12DPO.safetensors")
             : (s.localModel || OFFICIAL_FLUX2_KLEIN_BASE_9B_MODEL || "model.safetensors");
-        const workflowSteps = Number(s.steps);
+        const workflowSteps = isBuiltinFlux2Workflow ? 20 : Number(s.steps);
 
         // Built-in graphs stay clean in UI; Custom Workflow JSON remains the escape hatch.
         if (workflowJson) {
@@ -6589,33 +6590,33 @@ async function genLocal(prompt, negative, s, signal) {
                 // Replace placeholders like sd-proxy does
                 const replacements = {
                     '%prompt%': prompt,
-                    '%negative%': negative,
+                    '%negative%': isBuiltinFlux2Workflow ? "" : negative,
                     '%seed%': String(seed),
                     '%width%': String(s.width),
                     '%height%': String(s.height),
                     '%steps%': String(workflowSteps),
-                    '%cfg%': String(s.cfgScale),
+                    '%cfg%': String(isBuiltinFlux2Workflow ? 5 : Number(s.cfgScale)),
                     '%denoise%': String(denoise),
                     '%clip_skip%': String(clipSkip),
                     '%sampler%': samplerName,
                     '%scheduler%': schedulerName,
-                    '%model%': workflowModel,
+                    '%model%': isBuiltinFlux2Workflow ? "flux-2-klein\\moodyDesireMix_v20EDITHEADSWAP.safetensors" : workflowModel,
                     '%reference_image%': referenceImageName,
                     '%reference_image_base64%': referenceImageBase64
                 };
                 const typedReplacements = {
                     '%prompt%': prompt,
-                    '%negative%': negative,
+                    '%negative%': isBuiltinFlux2Workflow ? "" : negative,
                     '%seed%': seed,
                     '%width%': Number(s.width),
                     '%height%': Number(s.height),
                     '%steps%': workflowSteps,
-                    '%cfg%': Number(s.cfgScale),
+                    '%cfg%': isBuiltinFlux2Workflow ? 5 : Number(s.cfgScale),
                     '%denoise%': denoise,
                     '%clip_skip%': clipSkip,
                     '%sampler%': samplerName,
                     '%scheduler%': schedulerName,
-                    '%model%': workflowModel,
+                    '%model%': isBuiltinFlux2Workflow ? "flux-2-klein\\moodyDesireMix_v20EDITHEADSWAP.safetensors" : workflowModel,
                     '%reference_image%': referenceImageName,
                     '%reference_image_base64%': referenceImageBase64
                 };
@@ -11181,7 +11182,7 @@ function applyFlux2KleinCharacterWorkflow() {
     Object.assign(s, {
         provider: "local",
         localType: "comfyui",
-        localModel: OFFICIAL_FLUX2_KLEIN_BASE_9B_MODEL,
+        localModel: "flux-2-klein\\moodyDesireMix_v20EDITHEADSWAP.safetensors",
         width: 832,
         height: 1216,
         steps: 20,

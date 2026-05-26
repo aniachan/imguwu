@@ -10051,6 +10051,11 @@ function getCharacterStorageLookupKeys(entry = getCurrentCharacterEntry(), ctx =
     const preferred = getCharacterStorageKey(entry, ctx);
     if (preferred) keys.push(preferred);
 
+    // Only fall back to legacy raw characterId keys when we do not have a
+    // stable per-card identifier. characterId can be reused across cards/chats.
+    const hasStableCardKey = typeof preferred === "string" && (preferred.startsWith("avatar:") || preferred.startsWith("dataid:"));
+    if (hasStableCardKey) return uniqueStringList(keys.filter(Boolean));
+
     const charId = ctx?.characterId ?? entry?.id ?? null;
     if (charId != null) keys.push(String(charId));
 

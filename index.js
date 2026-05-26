@@ -5450,6 +5450,7 @@ Tags:`;
                 label: "image prompt generation request",
                 prefill: referenceDriven ? "" : resolvedPrefill,
                 returnMeta: true,
+                maxTokens: referenceDriven ? 120 : null,
             });
             llmPrompt = helperResponseMeta?.text || "";
         }
@@ -5532,13 +5533,18 @@ function buildVisualPromptFallback(scene) {
 
 function compactReferenceScenePrompt(text, settings = getSettings()) {
     const s = settings || {};
-    const styleIsNone = !s.style || s.style === "none";
+    const preserveRealism = String(s.style || "").trim().toLowerCase() === "realism";
     let cleaned = String(text || "")
         .replace(/^\s*(?:image prompt|prompt|scene prompt|output)\s*:\s*/i, "")
         .replace(/\s+/g, " ")
         .trim();
 
-    if (styleIsNone) {
+    cleaned = cleaned
+        .replace(/\b(?:masterpiece|best quality|high quality|highly detailed|ultra detailed|sharp focus|8k|4k|absurdres|highres)\b/gi, "")
+        .replace(/\s+,/g, ",")
+        .replace(/,{2,}/g, ",");
+
+    if (!preserveRealism) {
         cleaned = cleaned
             .replace(/\b(?:photorealistic|photo-realistic|hyperrealistic|hyper-realistic|realistic|cinematic photography|professional photography|dslr|35mm|85mm|lens|bokeh|film still|skin texture|pores)\b/gi, "")
             .replace(/\s+,/g, ",")
@@ -5559,12 +5565,23 @@ function compactReferenceScenePrompt(text, settings = getSettings()) {
 
     cleaned = limited.join(", ").trim();
     const words = cleaned.split(/\s+/).filter(Boolean);
-    if (words.length > 42) {
-        cleaned = words.slice(0, 42).join(" ").replace(/,\s*[^,]*$/, "").trim();
+    if (words.length > 28) {
+        cleaned = words.slice(0, 28).join(" ").replace(/,\s*[^,]*$/, "").trim();
     }
-    if (cleaned.length > 260) {
-        cleaned = cleaned.slice(0, 260).replace(/,\s*[^,]*$/, "").trim();
+    if (cleaned.length > 180) {
+        cleaned = cleaned.slice(0, 180).replace(/,\s*[^,]*$/, "").trim();
     }
+    return cleaned;
+}
+
+function finalizeReferenceWorkflowPrompt(prompt, settings = getSettings()) {
+    let cleaned = compactReferenceScenePrompt(prompt, settings);
+    cleaned = cleaned
+        .replace(/\b(?:anime style|illustration style|rendering style)\b/gi, "")
+        .replace(/\s+,/g, ",")
+        .replace(/,{2,}/g, ",")
+        .replace(/^,\s*|\s*,\s*$/g, "")
+        .trim();
     return cleaned;
 }
 
@@ -14397,6 +14414,7 @@ async function runQuickPaletteGeneration(anchor) {
 
     return generateImageFromDescriptionRequest({
         description,
+        directPrompt: choice.mode === "custom",
         promptStyle: getSettings().llmPromptStyle || "natural",
         editPrompt: !!getSettings().llmEditPrompt,
     });
@@ -14602,6 +14620,9 @@ async function generateImageInjectPalette() {
                 checkAborted(cancelCheckpoint);
                 prompt = contextualApplied.prompt;
                 negative = contextualApplied.negative;
+                if (referenceWorkflow) {
+                    prompt = finalizeReferenceWorkflowPrompt(prompt, s);
+                }
 
                 lastPrompt = prompt;
                 lastNegative = negative;
@@ -14687,10 +14708,11 @@ async function generateImageFromDescriptionRequest(request) {
     if (!request?.description) return;
     beginGeneration({ disableGenerateButton: true, clearPendingAuto: true });
     const baseSettings = getSettings();
+    const directPrompt = !!request.directPrompt;
     const s = {
         ...baseSettings,
         useLastMessage: false,
-        useLLMPrompt: true,
+        useLLMPrompt: !directPrompt,
         llmPromptStyle: request.promptStyle || baseSettings.llmPromptStyle || "tags",
     };
     const referenceWorkflow = isUsingComfyReferenceWorkflow(s);
@@ -14702,16 +14724,22 @@ async function generateImageFromDescriptionRequest(request) {
         checkAborted(cancelCheckpoint);
         lastGenerationSourceMessageIndex = null;
         lastProxyContextRefImages = [];
-        log(`Plain description: Generating AI prompt from ${basePrompt.length} chars`);
-        showStatus("🤖 Turning description into image prompt...");
-
-        let prompt = await generateLLMPrompt(s, basePrompt, currentAbortController?.signal, {
-            isMultiMessageScene: false,
-        });
+        let prompt;
+        if (directPrompt) {
+            log(`Direct custom prompt: Sending ${basePrompt.length} chars directly to provider`);
+            showStatus("🖼️ Generating image...");
+            prompt = String(basePrompt || "").trim();
+        } else {
+            log(`Plain description: Generating AI prompt from ${basePrompt.length} chars`);
+            showStatus("🤖 Turning description into image prompt...");
+            prompt = await generateLLMPrompt(s, basePrompt, currentAbortController?.signal, {
+                isMultiMessageScene: false,
+            });
+        }
         checkAborted(cancelCheckpoint);
-        lastPromptWasLLM = prompt !== basePrompt;
+        lastPromptWasLLM = !directPrompt && prompt !== basePrompt;
 
-        if (request.editPrompt) {
+        if (!directPrompt && request.editPrompt) {
             const editedPrompt = await showPromptEditDialog(prompt);
             if (editedPrompt !== null) {
                 prompt = editedPrompt;
@@ -14720,32 +14748,40 @@ async function generateImageFromDescriptionRequest(request) {
             }
         }
 
-        prompt = applyStyle(prompt, s);
-        if (!isUsingComfyReferenceWorkflow(s)) {
-            prompt = applyCurrentVisualIdentityToPrompt(prompt);
+        let negative = "";
+        let contextualApplied = { seedOverride: null };
+        if (!directPrompt) {
+            prompt = applyStyle(prompt, s);
+            if (!isUsingComfyReferenceWorkflow(s)) {
+                prompt = applyCurrentVisualIdentityToPrompt(prompt);
+            }
+
+            if (!referenceWorkflow && s.appendQuality && s.qualityTags) {
+                prompt = `${s.qualityTags}, ${prompt}`;
+            }
+            negative = referenceWorkflow ? "" : resolvePrompt(s.negativePrompt);
+
+            if (s.useSTStyle !== false) {
+                const stStyle = getSTStyleSettings();
+                if (!referenceWorkflow && stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
+                if (!referenceWorkflow && stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
+                if (!referenceWorkflow && stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
+                if (!referenceWorkflow && stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
+            }
+
+            contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
+                matchText: [basePrompt, prompt].filter(Boolean).join("\n\n"),
+                llmSceneText: basePrompt,
+                signal: currentAbortController?.signal,
+            });
+            checkAborted(cancelCheckpoint);
+            prompt = contextualApplied.prompt;
+            negative = contextualApplied.negative;
         }
 
-        if (!referenceWorkflow && s.appendQuality && s.qualityTags) {
-            prompt = `${s.qualityTags}, ${prompt}`;
+        if (referenceWorkflow) {
+            prompt = finalizeReferenceWorkflowPrompt(prompt, s);
         }
-        let negative = referenceWorkflow ? "" : resolvePrompt(s.negativePrompt);
-
-        if (s.useSTStyle !== false) {
-            const stStyle = getSTStyleSettings();
-            if (!referenceWorkflow && stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
-            if (!referenceWorkflow && stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
-            if (!referenceWorkflow && stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
-            if (!referenceWorkflow && stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
-        }
-
-        const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
-            matchText: [basePrompt, prompt].filter(Boolean).join("\n\n"),
-            llmSceneText: basePrompt,
-            signal: currentAbortController?.signal,
-        });
-        checkAborted(cancelCheckpoint);
-        prompt = contextualApplied.prompt;
-        negative = contextualApplied.negative;
 
         lastPrompt = prompt;
         lastNegative = negative;
@@ -14942,6 +14978,9 @@ async function generateImage() {
     checkAborted(cancelCheckpoint);
     prompt = contextualApplied.prompt;
     negative = contextualApplied.negative;
+    if (referenceWorkflow) {
+        prompt = finalizeReferenceWorkflowPrompt(prompt, s);
+    }
 
     lastPrompt = prompt;
     lastNegative = negative;

@@ -665,6 +665,21 @@ function safeSetStorage(key, value, errorMessage = "") {
         return false;
     }
 }
+
+function stableSerialize(value) {
+    if (Array.isArray(value)) {
+        return `[${value.map(item => stableSerialize(item)).join(",")}]`;
+    }
+    if (value && typeof value === "object") {
+        const keys = Object.keys(value).sort();
+        return `{${keys.map(key => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
+}
+
+function stableDataEquals(a, b) {
+    return stableSerialize(a) === stableSerialize(b);
+}
 // Backup mapping: localStorage key → extensionSettings backup key
 const BACKUP_KEYS = {
     qig_char_settings: "_backupCharSettings",
@@ -2957,6 +2972,7 @@ async function loadSettings() {
         { localKey: "qig_active_pool_ids_by_char", backupKey: "_backupActiveFilterPoolIdsByChar", setter: v => { activeFilterPoolIdsByChar = v; } },
     ];
     let restoredCount = 0;
+    let restoredFromMissingCount = 0;
     for (const { localKey, backupKey, setter } of restoreTargets) {
         const localVal = localStorage.getItem(localKey);
         const backupVal = s[backupKey];
@@ -2982,17 +2998,21 @@ async function loadSettings() {
             (expectsArray && !Array.isArray(parsedLocal)) ||
             (expectsObject && (typeof parsedLocal !== "object" || parsedLocal === null || Array.isArray(parsedLocal)))
         );
-        const cacheDiffers = !hasParsableLocal || JSON.stringify(parsedLocal) !== JSON.stringify(backupVal);
+        const cacheMissingOrInvalid = localVal == null || !hasParsableLocal;
+        const cacheDiffers = cacheMissingOrInvalid || !stableDataEquals(parsedLocal, backupVal);
 
         setter(backupVal);
-        if (localVal == null || typeMismatch || cacheDiffers) {
+        if (cacheMissingOrInvalid || typeMismatch || cacheDiffers) {
             safeSetStorage(localKey, JSON.stringify(backupVal));
             restoredCount++;
+            if (cacheMissingOrInvalid) restoredFromMissingCount++;
         }
     }
     if (restoredCount > 0) {
         log(`Restored ${restoredCount} preset store(s) from server backup`);
-        toastr?.info?.(`Restored ${restoredCount} setting(s) from server backup (localStorage was empty)`);
+        if (restoredFromMissingCount > 0) {
+            toastr?.info?.(`Restored ${restoredFromMissingCount} setting(s) from server backup (localStorage was empty or invalid)`);
+        }
     }
     const normalizedPresets = normalizeGenerationPresetStore(generationPresets);
     ensureGenerationPresetIds({ persist: true });

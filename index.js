@@ -35,43 +35,25 @@ const DUAL_INJECT_REGEX_DEFAULT = '<pic\\s+prompt="([^"]+)"\\s*/?>|<image>([\\s\
 const OFFICIAL_FLUX2_KLEIN_BASE_9B_MODEL = "flux-2-klein-base-9b-fp8.safetensors";
 const LEGACY_DEFAULT_FLUX2_MODEL = "flux-2-klein\\moodyDesireMix_v20EDITHEADSWAP.safetensors";
 const FLUX2_KLEIN_CHARACTER_WORKFLOW = JSON.stringify({
-    "1": { "inputs": { "unet_name": "%model%", "weight_dtype": "default" }, "class_type": "UNETLoader", "_meta": { "title": "Flux2 Klein Edit Model" } },
-    "2": { "inputs": { "model": ["1", 0] }, "class_type": "FluxKVCache", "_meta": { "title": "Flux KV Cache" } },
-    "3": { "inputs": { "clip_name": "qwen_3_8b_fp8mixed.safetensors", "type": "flux2", "device": "default" }, "class_type": "CLIPLoader", "_meta": { "title": "Flux2 Text Encoder" } },
-    "4": {
-        "inputs": {
-            "text": "Use the supplied reference image as the visual identity and rendering-style reference for the same character. Preserve the character's face, hair, eyes, distinctive accessories, overall visual identity, and the reference image's illustration/anime rendering approach unless the scene request explicitly changes them. Create a coherent new image for this scene request: %prompt%",
-            "clip": ["3", 0]
-        },
-        "class_type": "CLIPTextEncode",
-        "_meta": { "title": "Image Prompt" }
-    },
-    "5": { "inputs": { "guidance": 3.5, "conditioning": ["4", 0] }, "class_type": "FluxGuidance", "_meta": { "title": "Flux Guidance" } },
-    "6": { "inputs": { "conditioning": ["4", 0] }, "class_type": "ConditioningZeroOut", "_meta": { "title": "Zero Negative Conditioning" } },
-    "7": { "inputs": { "vae_name": "full_encoder_small_decoder.safetensors" }, "class_type": "VAELoader", "_meta": { "title": "Flux2 Edit VAE" } },
-    "8": {
-        "inputs": {
-            "conditioning": ["5", 0],
-            "neg_conditioning": ["6", 0],
-            "vae": ["7", 0],
-            "upscale_method": "nearest-exact",
-            "scale_megapixels": 1,
-            "images_base64": "%reference_image_base64%"
-        },
-        "class_type": "ReferenceChainConditioningBase64",
-        "_meta": { "title": "Character Reference Image" }
-    },
-    "9": { "inputs": { "pixels": ["8", 2], "vae": ["7", 0] }, "class_type": "VAEEncode", "_meta": { "title": "Encode Reference" } },
-    "11": { "inputs": { "conditioning": ["5", 0], "latent": ["9", 0] }, "class_type": "ReferenceLatent", "_meta": { "title": "Positive Reference" } },
-    "12": { "inputs": { "conditioning": ["6", 0], "latent": ["9", 0] }, "class_type": "ReferenceLatent", "_meta": { "title": "Negative Reference" } },
-    "13": { "inputs": { "width": "%width%", "height": "%height%", "batch_size": 1 }, "class_type": "EmptyFlux2LatentImage", "_meta": { "title": "Output Size" } },
-    "14": { "inputs": { "steps": "%steps%", "width": "%width%", "height": "%height%" }, "class_type": "Flux2Scheduler", "_meta": { "title": "Flux2 Scheduler" } },
-    "15": { "inputs": { "sampler_name": "euler" }, "class_type": "KSamplerSelect", "_meta": { "title": "Euler Sampler" } },
-    "16": { "inputs": { "noise_seed": "%seed%" }, "class_type": "RandomNoise", "_meta": { "title": "Seed" } },
-    "17": { "inputs": { "cfg": 1, "model": ["2", 0], "positive": ["11", 0], "negative": ["12", 0] }, "class_type": "CFGGuider", "_meta": { "title": "CFG Guider" } },
-    "18": { "inputs": { "noise": ["16", 0], "guider": ["17", 0], "sampler": ["15", 0], "sigmas": ["14", 0], "latent_image": ["13", 0] }, "class_type": "SamplerCustomAdvanced", "_meta": { "title": "Sample" } },
-    "19": { "inputs": { "samples": ["18", 0], "vae": ["7", 0] }, "class_type": "VAEDecode", "_meta": { "title": "Decode" } },
-    "20": { "inputs": { "filename_prefix": "qig_flux2_character", "images": ["19", 0] }, "class_type": "SaveImage", "_meta": { "title": "Save Image" } }
+    "9": { "inputs": { "filename_prefix": "qig_flux2_character", "images": ["75:65", 0] }, "class_type": "SaveImage", "_meta": { "title": "Save Image" } },
+    "76": { "inputs": { "image": "%reference_image%" }, "class_type": "LoadImage", "_meta": { "title": "Load Image" } },
+    "75:61": { "inputs": { "sampler_name": "euler" }, "class_type": "KSamplerSelect", "_meta": { "title": "KSamplerSelect" } },
+    "75:62": { "inputs": { "steps": "%steps%", "width": ["75:100", 0], "height": ["75:100", 1] }, "class_type": "Flux2Scheduler", "_meta": { "title": "Flux2Scheduler" } },
+    "75:63": { "inputs": { "cfg": "%cfg%", "model": ["75:70", 0], "positive": ["75:124", 0], "negative": ["75:122", 0] }, "class_type": "CFGGuider", "_meta": { "title": "CFGGuider" } },
+    "75:64": { "inputs": { "noise": ["75:73", 0], "guider": ["75:63", 0], "sampler": ["75:61", 0], "sigmas": ["75:62", 0], "latent_image": ["75:66", 0] }, "class_type": "SamplerCustomAdvanced", "_meta": { "title": "SamplerCustomAdvanced" } },
+    "75:65": { "inputs": { "samples": ["75:64", 0], "vae": ["75:72", 0] }, "class_type": "VAEDecode", "_meta": { "title": "VAE Decode" } },
+    "75:73": { "inputs": { "noise_seed": "%seed%" }, "class_type": "RandomNoise", "_meta": { "title": "RandomNoise" } },
+    "75:70": { "inputs": { "unet_name": "%model%", "weight_dtype": "default" }, "class_type": "UNETLoader", "_meta": { "title": "Load Diffusion Model" } },
+    "75:71": { "inputs": { "clip_name": "qwen_3_8b_fp8mixed.safetensors", "type": "flux2", "device": "default" }, "class_type": "CLIPLoader", "_meta": { "title": "Load CLIP" } },
+    "75:74": { "inputs": { "text": "%prompt%", "clip": ["75:71", 0] }, "class_type": "CLIPTextEncode", "_meta": { "title": "CLIP Text Encode (Positive Prompt)" } },
+    "75:67": { "inputs": { "text": "%negative%", "clip": ["75:71", 0] }, "class_type": "CLIPTextEncode", "_meta": { "title": "CLIP Text Encode (Negative Prompt)" } },
+    "75:72": { "inputs": { "vae_name": "full_encoder_small_decoder.safetensors" }, "class_type": "VAELoader", "_meta": { "title": "Load VAE" } },
+    "75:66": { "inputs": { "width": ["75:100", 0], "height": ["75:100", 1], "batch_size": 1 }, "class_type": "EmptyFlux2LatentImage", "_meta": { "title": "Empty Flux 2 Latent" } },
+    "75:80": { "inputs": { "upscale_method": "lanczos", "megapixels": 1, "resolution_steps": 1, "image": ["76", 0] }, "class_type": "ImageScaleToTotalPixels", "_meta": { "title": "ImageScaleToTotalPixels" } },
+    "75:100": { "inputs": { "image": ["75:80", 0] }, "class_type": "GetImageSize", "_meta": { "title": "Get Image Size" } },
+    "75:122": { "inputs": { "conditioning": ["75:67", 0], "latent": ["75:123", 0] }, "class_type": "ReferenceLatent", "_meta": { "title": "ReferenceLatent" } },
+    "75:123": { "inputs": { "pixels": ["75:80", 0], "vae": ["75:72", 0] }, "class_type": "VAEEncode", "_meta": { "title": "VAE Encode" } },
+    "75:124": { "inputs": { "conditioning": ["75:74", 0], "latent": ["75:123", 0] }, "class_type": "ReferenceLatent", "_meta": { "title": "ReferenceLatent" } }
 }, null, 2);
 const ZIMAGE_TURBO_WORKFLOW = JSON.stringify({
     "1": { "inputs": { "unet_name": "%model%", "weight_dtype": "default" }, "class_type": "UNETLoader", "_meta": { "title": "Z-Image Turbo Model" } },
@@ -2438,6 +2420,29 @@ async function fetchComfyUILoras(url) {
         if (e.message?.includes("403 Forbidden")) throw e;
         return [];
     }
+}
+
+async function uploadComfyUIImage(baseUrl, imageSrc, signal) {
+    const dataUrl = await getComfyReferenceImageBase64(imageSrc, signal);
+    const blob = await (await fetch(dataUrl, { signal })).blob();
+    const extension = blob.type === "image/jpeg" ? "jpg" : blob.type === "image/webp" ? "webp" : "png";
+    const uploadName = `imguwu_reference_${Date.now()}.${extension}`;
+    const formData = new FormData();
+    formData.append("image", blob, uploadName);
+    formData.append("type", "input");
+    formData.append("overwrite", "true");
+    const res = await corsFetch(`${baseUrl.replace(/\/$/, "")}/upload/image`, {
+        method: "POST",
+        body: formData,
+        signal,
+    });
+    if (!res.ok) {
+        let detail = "";
+        try { detail = await res.text(); } catch {}
+        throw new Error(`ComfyUI image upload failed: ${res.status}${detail ? ` ${detail}` : ""}`);
+    }
+    const data = await res.json().catch(() => ({}));
+    return data?.name || uploadName;
 }
 
 function parseComfyLoras(value) {
@@ -6556,13 +6561,10 @@ async function genLocal(prompt, negative, s, signal) {
         const builtinWorkflowJson = shouldUseZImageBuiltin ? ZIMAGE_TURBO_WORKFLOW : FLUX2_KLEIN_CHARACTER_WORKFLOW;
         const customWorkflowJson = s.comfyWorkflow && s.comfyWorkflow.trim() ? s.comfyWorkflow : "";
         const workflowJson = customWorkflowJson || builtinWorkflowJson;
-        const isBuiltinFlux2Workflow = !customWorkflowJson && !shouldUseZImageBuiltin;
         const workflowModel = !customWorkflowJson && shouldUseZImageBuiltin
             ? (s.comfyZImageModel || "z-image-turbo\\moodyProMix_zitV12DPO.safetensors")
             : (s.localModel || OFFICIAL_FLUX2_KLEIN_BASE_9B_MODEL || "model.safetensors");
-        const workflowSteps = isBuiltinFlux2Workflow
-            ? Math.max(Number(s.steps) || 0, 50)
-            : Number(s.steps);
+        const workflowSteps = Number(s.steps);
 
         // Built-in graphs stay clean in UI; Custom Workflow JSON remains the escape hatch.
         if (workflowJson) {
@@ -6577,8 +6579,12 @@ async function genLocal(prompt, negative, s, signal) {
 
                 // Keep ST/card/upload references in the prompt body for base64-aware Comfy nodes.
                 let referenceImageBase64 = '';
+                let referenceImageName = '';
                 if (s.localRefImage) {
                     referenceImageBase64 = await getComfyReferenceImageBase64(s.localRefImage, signal);
+                    if (!customWorkflowJson && !shouldUseZImageBuiltin) {
+                        referenceImageName = await uploadComfyUIImage(baseUrl, s.localRefImage, signal);
+                    }
                 }
 
                 // Replace placeholders like sd-proxy does
@@ -6595,7 +6601,7 @@ async function genLocal(prompt, negative, s, signal) {
                     '%sampler%': samplerName,
                     '%scheduler%': schedulerName,
                     '%model%': workflowModel,
-                    '%reference_image%': '',
+                    '%reference_image%': referenceImageName,
                     '%reference_image_base64%': referenceImageBase64
                 };
                 const typedReplacements = {
@@ -6611,7 +6617,7 @@ async function genLocal(prompt, negative, s, signal) {
                     '%sampler%': samplerName,
                     '%scheduler%': schedulerName,
                     '%model%': workflowModel,
-                    '%reference_image%': '',
+                    '%reference_image%': referenceImageName,
                     '%reference_image_base64%': referenceImageBase64
                 };
 
@@ -11179,8 +11185,8 @@ function applyFlux2KleinCharacterWorkflow() {
         localModel: OFFICIAL_FLUX2_KLEIN_BASE_9B_MODEL,
         width: 832,
         height: 1216,
-        steps: 50,
-        cfgScale: 1,
+        steps: 20,
+        cfgScale: 5,
         sampler: "euler",
         comfyWorkflow: "",
         comfyBuiltinWorkflow: "flux2",

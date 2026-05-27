@@ -513,7 +513,10 @@ const defaultSettings = {
     localType: "comfyui",
     localModel: OFFICIAL_FLUX2_KLEIN_BASE_9B_MODEL,
     localRefImage: "",
+    localReferenceLibrary: [],
+    activeLocalReferenceId: "",
     visualIdentity: "",
+    sceneCast: [],
     localDenoise: 0.75,
     // A1111 specific
     a1111Model: "",
@@ -2717,6 +2720,14 @@ function showStatus(msg) {
 
 const hideStatus = () => showStatus();
 
+function notifyUiSuccess(message) {
+    const text = String(message || "").trim();
+    if (!text) return;
+    toastr?.success?.(text);
+    showStatus(text);
+    setTimeout(hideStatus, 2000);
+}
+
 function setGenerationActiveUI(active, { disableGenerateButton = false } = {}) {
     const paletteBtn = getOrCacheElement("qig-input-btn");
     if (paletteBtn) {
@@ -3690,13 +3701,115 @@ function prependVisualIdentity(visualIdentity, cardDescription) {
     return `Visual identity override: ${visual}\nCard description: ${card}`;
 }
 
-function applyCurrentVisualIdentityToPrompt(prompt) {
-    const identity = String(getSettings()?.visualIdentity || "").trim();
+function normalizeSceneCastEntry(entry = {}) {
+    const normalized = {
+        id: String(entry?.id || "").trim() || generateUUID(),
+        name: String(entry?.name || "").trim(),
+        identity: String(entry?.identity || "").trim(),
+        role: String(entry?.role || "").trim(),
+    };
+    return normalized;
+}
+
+function normalizeLocalReferenceEntry(entry = {}) {
+    return {
+        id: String(entry?.id || "").trim() || generateUUID(),
+        label: String(entry?.label || "").trim(),
+        image: String(entry?.image || "").trim(),
+    };
+}
+
+function normalizeLocalReferenceLibrary(library) {
+    if (!Array.isArray(library)) return [];
+    return library
+        .map(item => normalizeLocalReferenceEntry(item))
+        .filter(item => item.image);
+}
+
+function getLocalReferenceLibrary(settings = getSettings()) {
+    return normalizeLocalReferenceLibrary(settings?.localReferenceLibrary);
+}
+
+function ensureActiveLocalReference(settings = getSettings()) {
+    const s = settings || getSettings();
+    let library = getLocalReferenceLibrary(s);
+    if (!library.length && s.localRefImage) {
+        const migrated = normalizeLocalReferenceEntry({
+            label: buildLocalReferenceLabel("Migrated Reference"),
+            image: s.localRefImage,
+        });
+        library = [migrated];
+        s.localReferenceLibrary = library;
+        s.activeLocalReferenceId = migrated.id;
+    }
+    s.localReferenceLibrary = library;
+    const activeId = String(s.activeLocalReferenceId || "").trim();
+    let active = library.find(item => item.id === activeId) || null;
+    if (!active && library.length) {
+        active = library[0];
+        s.activeLocalReferenceId = active.id;
+    }
+    if (!active) {
+        s.activeLocalReferenceId = "";
+        s.localRefImage = "";
+        return null;
+    }
+    s.localRefImage = active.image;
+    return active;
+}
+
+function buildLocalReferenceLabel(prefix = "Reference") {
+    return `${prefix} ${new Date().toLocaleString()}`;
+}
+
+function normalizeSceneCastList(sceneCast) {
+    if (!Array.isArray(sceneCast)) return [];
+    return sceneCast
+        .map(item => normalizeSceneCastEntry(item))
+        .filter(item => item.name || item.identity || item.role);
+}
+
+function getSceneCast(settings = getSettings()) {
+    return normalizeSceneCastList(settings?.sceneCast);
+}
+
+function getSceneCastDraft(settings = getSettings()) {
+    if (!Array.isArray(settings?.sceneCast)) return [];
+    return settings.sceneCast.map(item => normalizeSceneCastEntry(item));
+}
+
+function buildSceneCastPromptContext(settings = getSettings()) {
+    const sceneCast = getSceneCast(settings);
+    if (!sceneCast.length) return "";
+    const lines = sceneCast.map((member, index) => {
+        const label = member.name || `Supporting character ${index + 1}`;
+        const details = [];
+        if (member.identity) details.push(`appearance: ${member.identity}`);
+        if (member.role) details.push(`scene role: ${member.role}`);
+        return `- ${label}${details.length ? ` (${details.join("; ")})` : ""}`;
+    });
+    return `Additional scene cast:\n${lines.join("\n")}`;
+}
+
+function applyCharacterContextToPrompt(prompt, settings = getSettings()) {
+    const s = settings || getSettings();
+    const parts = [];
+    const identity = String(s?.visualIdentity || "").trim();
     const text = String(prompt || "").trim();
-    if (!identity) return text;
-    const identityPreview = identity.slice(0, 80).toLowerCase();
-    if (identityPreview && text.toLowerCase().includes(identityPreview)) return text;
-    return [`Character visual identity: ${identity}`, text].filter(Boolean).join(". ");
+    if (identity) {
+        const identityPreview = identity.slice(0, 80).toLowerCase();
+        if (!identityPreview || !text.toLowerCase().includes(identityPreview)) {
+            parts.push(`Character visual identity: ${identity}`);
+        }
+    }
+    const sceneCastContext = buildSceneCastPromptContext(s);
+    if (sceneCastContext) parts.push(sceneCastContext);
+    if (text) parts.push(text);
+    return parts.join("\n").trim();
+}
+
+function applyCurrentVisualIdentityToPrompt(prompt) {
+    return applyCharacterContextToPrompt(prompt, getSettings());
 }
 
 function getCurrentCharacterEntry(ctx = getContext()) {
@@ -5163,6 +5276,7 @@ async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
         const tags = profile.charTagsResolved || "";
         const activeCharacterNames = uniqueStringList(profile.charNames || []);
         const activeCharacterList = activeCharacterNames.join(", ");
+        const manualSceneCastContext = buildSceneCastPromptContext(s);
         const resolvedPrefill = getResolvedLLMPrefill(s);
         const referenceDriven = !!profile.referenceDriven;
         const sceneUsesFirstPersonUser = /\b(i|me|my|mine|myself)\b/i.test(basePrompt);
@@ -5183,6 +5297,7 @@ async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
         if (profile.usesCurrentCardContext) {
             if (charDesc) appearanceContext += `${charName}'s appearance: ${charDesc.substring(0, referenceDriven ? 500 : 1500)}\n`;
             if (userPersona) appearanceContext += `${userName}'s appearance: ${userPersona.substring(0, 800)}\n`;
+            if (manualSceneCastContext) appearanceContext += `${manualSceneCastContext}\n`;
             if (!referenceDriven && tags) appearanceContext += `Source/Tags: ${tags}\n`;
             if (!referenceDriven && scenario) appearanceContext += `Setting: ${scenario.substring(0, 400)}\n`;
         } else {
@@ -5195,6 +5310,9 @@ async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
                     ? "Secondary active character profiles (only use if the scene clearly includes them):"
                     : "Character profiles:";
                 appearanceSections.push(`${charProfileLabel}\n${charDesc.substring(0, 1500)}`);
+            }
+            if (manualSceneCastContext) {
+                appearanceSections.push(manualSceneCastContext);
             }
             if (!sceneIncludesUserPersona && userPersona) {
                 appearanceSections.push(`User persona (${userName}; applies to first-person references like I/me/my): ${userPersona.substring(0, 800)}`);
@@ -8014,7 +8132,8 @@ function displayImage(entryOrUrl, skipGallery) {
                 } else {
                     await insertImageIntoMessage(entry, popupInsertTargetIndex);
                 }
-                toastr.success("Image inserted into message");
+                popup.style.display = "none";
+                notifyUiSuccess("Image inserted into chat");
             } catch (err) {
                 console.error("[Quick Image Gen] Insert failed:", err);
                 toastr.error("Failed to insert image: " + err.message);
@@ -8046,14 +8165,7 @@ function displayImage(entryOrUrl, skipGallery) {
             }
 
             // Otherwise use for local img2img
-            s.localRefImage = imgSrc;
-            saveSettingsDebounced();
-            const preview = document.getElementById("qig-local-ref-preview");
-            if (preview) { preview.src = imgSrc; preview.style.display = "block"; }
-            const clearBtn = document.getElementById("qig-local-ref-clear");
-            if (clearBtn) clearBtn.style.display = "block";
-            const denoiseWrap = document.getElementById("qig-local-denoise-wrap");
-            if (denoiseWrap) denoiseWrap.style.display = s.localType === "a1111" ? "block" : "none";
+            addLocalReferenceImage(imgSrc, "Generated Reference");
             popup.style.display = "none";
             toastr.success("Image set as reference for img2img");
         };
@@ -8219,7 +8331,8 @@ function displayBatchResults(results) {
                     const insertTargetIndex = Number.isInteger(entry?.sourceMessageIndex) ? entry.sourceMessageIndex : batchFallbackSourceMessageIndex;
                     await insertImageIntoMessage(entry, insertTargetIndex);
                 }
-                toastr.success(`Inserted ${entries.length} images into message`);
+                popup.style.display = "none";
+                notifyUiSuccess(`Inserted ${entries.length} image${entries.length === 1 ? "" : "s"} into chat`);
             } catch (err) {
                 console.error("[Quick Image Gen] Insert all failed:", err);
                 toastr.error("Failed to insert images: " + err.message);
@@ -8257,7 +8370,8 @@ function displayBatchResults(results) {
                 const activeEntry = getCurrentEntry();
                 const insertTargetIndex = Number.isInteger(activeEntry?.sourceMessageIndex) ? activeEntry.sourceMessageIndex : batchFallbackSourceMessageIndex;
                 await insertImageIntoMessage(activeEntry, insertTargetIndex);
-                toastr.success("Image inserted into message");
+                popup.style.display = "none";
+                notifyUiSuccess("Image inserted into chat");
             } catch (err) {
                 console.error("[Quick Image Gen] Insert failed:", err);
                 toastr.error("Failed to insert image: " + err.message);
@@ -8287,14 +8401,7 @@ function displayBatchResults(results) {
                 return;
             }
 
-            s.localRefImage = imgSrc;
-            saveSettingsDebounced();
-            const preview = document.getElementById("qig-local-ref-preview");
-            if (preview) { preview.src = imgSrc; preview.style.display = "block"; }
-            const clearBtn = document.getElementById("qig-local-ref-clear");
-            if (clearBtn) clearBtn.style.display = "block";
-            const denoiseWrap = document.getElementById("qig-local-denoise-wrap");
-            if (denoiseWrap) denoiseWrap.style.display = s.localType === "a1111" ? "block" : "none";
+            addLocalReferenceImage(imgSrc, "Generated Reference");
             popup.style.display = "none";
             toastr.success("Image set as reference for img2img");
         };
@@ -10339,6 +10446,7 @@ function getCurrentRefImages(s) {
 }
 
 function cloneCharScopedState(s = getSettings()) {
+    ensureActiveLocalReference(s);
     return {
         prompt: s.prompt,
         negativePrompt: s.negativePrompt,
@@ -10346,7 +10454,10 @@ function cloneCharScopedState(s = getSettings()) {
         width: s.width,
         height: s.height,
         visualIdentity: s.visualIdentity || "",
+        sceneCast: getSceneCast(s),
         localRefImage: s.localRefImage || "",
+        localReferenceLibrary: getLocalReferenceLibrary(s),
+        activeLocalReferenceId: String(s.activeLocalReferenceId || "").trim(),
         proxyRefImages: [...(s.proxyRefImages || [])],
         nanobananaRefImages: [...(s.nanobananaRefImages || [])],
         nanogptRefImages: [...(s.nanogptRefImages || [])],
@@ -10372,10 +10483,14 @@ function applyCharScopedState(state, s = getSettings()) {
     s.width = state.width ?? defaultSettings.width;
     s.height = state.height ?? defaultSettings.height;
     s.visualIdentity = state.visualIdentity ?? "";
+    s.sceneCast = normalizeSceneCastList(state.sceneCast);
+    s.localReferenceLibrary = normalizeLocalReferenceLibrary(state.localReferenceLibrary);
+    s.activeLocalReferenceId = state.activeLocalReferenceId ?? "";
     s.localRefImage = state.localRefImage ?? "";
     s.proxyRefImages = [...(state.proxyRefImages || [])];
     s.nanobananaRefImages = [...(state.nanobananaRefImages || [])];
     s.nanogptRefImages = [...(state.nanogptRefImages || [])];
+    ensureActiveLocalReference(s);
 
     const negativeEl = document.getElementById("qig-negative");
     const styleEl = document.getElementById("qig-style");
@@ -10403,10 +10518,14 @@ function applyCharScopedState(state, s = getSettings()) {
     renderRefImages();
     renderNanobananaRefImages();
     renderNanogptRefImages();
+    renderSceneCastEditor();
 }
 
 function clearCharacterScopedFields(s = getSettings()) {
     s.visualIdentity = "";
+    s.sceneCast = [];
+    s.localReferenceLibrary = [];
+    s.activeLocalReferenceId = "";
     s.localRefImage = "";
     s.proxyRefImages = [];
     s.nanobananaRefImages = [];
@@ -10419,6 +10538,121 @@ function clearCharacterScopedFields(s = getSettings()) {
     renderRefImages();
     renderNanobananaRefImages();
     renderNanogptRefImages();
+    renderSceneCastEditor();
+}
+
+function renderSceneCastEditor() {
+    const container = document.getElementById("qig-scene-cast-list");
+    if (!container) return;
+    const sceneCast = getSceneCastDraft();
+    if (!sceneCast.length) {
+        container.innerHTML = `<div class="qig-muted">No supporting characters saved for this scene yet.</div>`;
+        return;
+    }
+    container.innerHTML = sceneCast.map((member, index) => `
+        <div class="qig-scene-cast-card" data-scene-cast-id="${escapeHtml(member.id)}">
+            <div class="qig-scene-cast-card__header">
+                <strong>Scene Character ${index + 1}</strong>
+                <button type="button" class="menu_button qig-scene-cast-remove" data-scene-cast-remove="${escapeHtml(member.id)}" title="Remove this scene character">Remove</button>
+            </div>
+            <label>Name</label>
+            <input type="text" data-scene-cast-field="name" value="${escapeHtml(member.name)}" placeholder="e.g. childhood friend, rival knight, barista">
+            <label>Visual Identity</label>
+            <textarea rows="3" data-scene-cast-field="identity" placeholder="Face, hair, body/species traits, outfit anchors, accessories, and other distinguishing features.">${escapeHtml(member.identity)}</textarea>
+            <label>Role / Placement</label>
+            <input type="text" data-scene-cast-field="role" value="${escapeHtml(member.role)}" placeholder="e.g. standing to the left, hugging the main character, seated across the table">
+        </div>
+    `).join("");
+}
+
+function updateSceneCastFromEditor() {
+    const container = document.getElementById("qig-scene-cast-list");
+    if (!container) return;
+    const sceneCast = [...container.querySelectorAll("[data-scene-cast-id]")].map(card => normalizeSceneCastEntry({
+        id: card.getAttribute("data-scene-cast-id"),
+        name: card.querySelector('[data-scene-cast-field="name"]')?.value,
+        identity: card.querySelector('[data-scene-cast-field="identity"]')?.value,
+        role: card.querySelector('[data-scene-cast-field="role"]')?.value,
+    }));
+    getSettings().sceneCast = sceneCast;
+    saveSettingsDebounced();
+}
+
+function addSceneCastMember() {
+    const s = getSettings();
+    s.sceneCast = [...getSceneCastDraft(s), normalizeSceneCastEntry({})];
+    renderSceneCastEditor();
+    saveSettingsDebounced();
+}
+
+function removeSceneCastMember(id) {
+    const targetId = String(id || "").trim();
+    if (!targetId) return;
+    const s = getSettings();
+    s.sceneCast = getSceneCastDraft(s).filter(member => member.id !== targetId);
+    renderSceneCastEditor();
+    saveSettingsDebounced();
+}
+
+function renderLocalReferenceLibrary(s = getSettings()) {
+    const container = document.getElementById("qig-local-ref-library");
+    if (!container) return;
+    const library = getLocalReferenceLibrary(s);
+    const active = ensureActiveLocalReference(s);
+    if (!library.length) {
+        container.innerHTML = `<div class="qig-muted">No saved reference images for this character yet.</div>`;
+        return;
+    }
+    container.innerHTML = library.map(item => `
+        <button type="button" class="qig-ref-library-item${active?.id === item.id ? " is-active" : ""}" data-local-ref-id="${escapeHtml(item.id)}" title="${escapeHtml(item.label || "Reference image")}">
+            <img src="${escapeHtml(item.image)}" alt="${escapeHtml(item.label || "Reference image")}">
+            <span>${escapeHtml(item.label || "Reference")}</span>
+            <span class="qig-ref-library-item__delete" data-local-ref-delete="${escapeHtml(item.id)}" title="Delete this reference image" aria-label="Delete this reference image">✕</span>
+        </button>
+    `).join("");
+}
+
+function addLocalReferenceImage(image, label = "") {
+    const dataUrl = String(image || "").trim();
+    if (!dataUrl) return;
+    const s = getSettings();
+    const entry = normalizeLocalReferenceEntry({
+        label: String(label || "").trim() || buildLocalReferenceLabel(),
+        image: dataUrl,
+    });
+    const library = getLocalReferenceLibrary(s);
+    s.localReferenceLibrary = [entry, ...library];
+    s.activeLocalReferenceId = entry.id;
+    ensureActiveLocalReference(s);
+    saveSettingsDebounced();
+    syncLocalRefImageUI(s);
+}
+
+function setActiveLocalReference(id) {
+    const targetId = String(id || "").trim();
+    if (!targetId) return;
+    const s = getSettings();
+    const library = getLocalReferenceLibrary(s);
+    if (!library.some(item => item.id === targetId)) return;
+    s.localReferenceLibrary = library;
+    s.activeLocalReferenceId = targetId;
+    ensureActiveLocalReference(s);
+    saveSettingsDebounced();
+    syncLocalRefImageUI(s);
+}
+
+function removeLocalReferenceImage(id) {
+    const targetId = String(id || "").trim();
+    if (!targetId) return;
+    const s = getSettings();
+    const nextLibrary = getLocalReferenceLibrary(s).filter(item => item.id !== targetId);
+    s.localReferenceLibrary = nextLibrary;
+    if (s.activeLocalReferenceId === targetId) {
+        s.activeLocalReferenceId = nextLibrary[0]?.id || "";
+    }
+    ensureActiveLocalReference(s);
+    saveSettingsDebounced();
+    syncLocalRefImageUI(s);
 }
 
 function getCurrentCharId() {
@@ -10744,7 +10978,10 @@ function saveCharSettings() {
         style: s.style,
         width: s.width,
         height: s.height,
-        visualIdentity: s.visualIdentity || ""
+        visualIdentity: s.visualIdentity || "",
+        sceneCast: getSceneCast(s),
+        localReferenceLibrary: getLocalReferenceLibrary(s),
+        activeLocalReferenceId: String(s.activeLocalReferenceId || "").trim(),
     };
     const savedCharSettings = safeSetStorage("qig_char_settings", JSON.stringify(charSettings), "Failed to save character settings. Browser storage may be full.");
     const refs = getCurrentRefImages(s);
@@ -10813,8 +11050,7 @@ async function useCurrentCardAsReferenceImage() {
     showStatus("Loading character card image...");
     try {
         const s = getSettings();
-        s.localRefImage = await imageUrlToDataUrl(cardImageUrl);
-        syncLocalRefImageUI(s);
+        addLocalReferenceImage(await imageUrlToDataUrl(cardImageUrl), "Card Image Reference");
         saveSettingsDebounced();
         saveCharSettings();
         showStatus("Saved card image as this character's reference");
@@ -11066,6 +11302,9 @@ function loadCharSettings() {
         if (heightEl) heightEl.value = s.height;
     }
     s.visualIdentity = cs.visualIdentity ?? "";
+    s.sceneCast = normalizeSceneCastList(cs.sceneCast);
+    s.localReferenceLibrary = normalizeLocalReferenceLibrary(cs.localReferenceLibrary);
+    s.activeLocalReferenceId = String(cs.activeLocalReferenceId || "").trim();
     const visualIdentityEl = document.getElementById("qig-visual-identity");
     if (visualIdentityEl) visualIdentityEl.value = s.visualIdentity;
     if (s.provider === "novelai") {
@@ -11089,10 +11328,20 @@ function loadCharSettings() {
             s.nanogptRefImages = [...refs];
         }
     }
+    if (!s.localReferenceLibrary.length && s.localRefImage) {
+        const migrated = normalizeLocalReferenceEntry({
+            label: buildLocalReferenceLabel("Migrated Reference"),
+            image: s.localRefImage,
+        });
+        s.localReferenceLibrary = [migrated];
+        s.activeLocalReferenceId = migrated.id;
+    }
+    ensureActiveLocalReference(s);
     renderRefImages();
     renderNanobananaRefImages();
     renderNanogptRefImages();
     syncLocalRefImageUI(s);
+    renderSceneCastEditor();
     saveSettingsDebounced();
     renderContextualFilters();
     return true;
@@ -11915,15 +12164,18 @@ function refreshProviderInputs(provider, { updateProviderVisibility = true } = {
 }
 
 function syncLocalRefImageUI(s = getSettings()) {
+    const active = ensureActiveLocalReference(s);
     const preview = document.getElementById("qig-local-ref-preview");
     const clear = document.getElementById("qig-local-ref-clear");
     const denoise = document.getElementById("qig-local-denoise-wrap");
     if (preview) {
         preview.src = s.localRefImage || "";
         preview.style.display = s.localRefImage ? "block" : "none";
+        preview.title = active?.label || "Active reference image";
     }
     if (clear) clear.style.display = s.localRefImage ? "block" : "none";
     if (denoise) denoise.style.display = s.localType === "a1111" && s.localRefImage ? "block" : "none";
+    renderLocalReferenceLibrary(s);
 }
 
 function updateProviderUI() {
@@ -12290,16 +12542,23 @@ function createUI() {
                         <textarea id="qig-visual-identity" rows="4" placeholder="Face, hair, eyes, species/body traits, accessories, markings, and iconic outfit anchors.">${esc(s.visualIdentity || "")}</textarea>
                         <small>This is stored by Save Char and fed into prompt generation before noisy card description text.</small>
                     </div>
+                    <div class="qig-expression-panel">
+                        <div class="qig-card-title">Scene Cast</div>
+                        <small>Add extra characters for this scene setup. These are text-only in phase 1 and feed prompt generation.</small>
+                        <div id="qig-scene-cast-list" class="qig-scene-cast-list"></div>
+                        <button id="qig-scene-cast-add" class="menu_button qig-inline-action" type="button"><span class="fa-solid fa-user-plus"></span><span>Add Scene Character</span></button>
+                    </div>
                     <div class="qig-field">
                         <label>Reference Image</label>
                         <div class="qig-reference-row">
                             <img id="qig-local-ref-preview" class="qig-reference-preview" src="${esc(s.localRefImage || '')}" style="display:${s.localRefImage ? 'block' : 'none'};">
                             <button id="qig-local-ref-card-btn" class="menu_button" title="Use the current character card image as this character's ComfyUI reference"><span class="fa-solid fa-address-card"></span><span>Use Card Image</span></button>
                             <button id="qig-local-ref-btn" class="menu_button qig-reference-upload" title="Upload a reference image for this character"><span class="fa-solid fa-paperclip"></span><span>Upload Reference</span></button>
-                            <button id="qig-local-ref-clear" class="menu_button qig-reference-clear" style="display:${s.localRefImage ? 'block' : 'none'};" title="Clear reference image" aria-label="Clear reference image"><span class="fa-solid fa-xmark"></span></button>
+                            <button id="qig-local-ref-clear" class="menu_button qig-reference-clear" style="display:${s.localRefImage ? 'block' : 'none'};" title="Delete active reference image" aria-label="Delete active reference image"><span class="fa-solid fa-xmark"></span></button>
                         </div>
+                        <div id="qig-local-ref-library" class="qig-ref-library"></div>
                         <input type="file" id="qig-local-ref-input" accept="image/*" style="display:none">
-                        <small>Use the card image or upload a clearer face-forward reference. Save Char persists uploads for this character.</small>
+                        <small>Upload multiple references for this character, then click one in the catalogue to make it the active reference used by generation.</small>
                     </div>
                     <div class="qig-action-strip">
                         <button id="qig-extract-visual-identity" class="menu_button" title="Ask the active text model to generate reusable appearance text from the character description"><span class="fa-solid fa-wand-magic-sparkles"></span><span>Generate Identity</span></button>
@@ -13381,6 +13640,14 @@ function createUI() {
         getSettings().visualIdentity = e.target.value;
         saveSettingsDebounced();
     };
+    document.getElementById("qig-scene-cast-add").onclick = () => addSceneCastMember();
+    document.getElementById("qig-scene-cast-list").addEventListener("input", () => {
+        updateSceneCastFromEditor();
+    });
+    document.getElementById("qig-scene-cast-list").addEventListener("click", (event) => {
+        const removeId = event.target?.closest?.("[data-scene-cast-remove]")?.getAttribute("data-scene-cast-remove");
+        if (removeId) removeSceneCastMember(removeId);
+    });
     document.getElementById("qig-plain-desc-btn").onclick = generateImageFromPlainDescription;
     document.getElementById("qig-profile-save").onclick = saveConnectionProfile;
     document.getElementById("qig-save-preset").onclick = savePreset;
@@ -13401,6 +13668,7 @@ function createUI() {
     document.getElementById("qig-comfy-flux2-character-workflow").onclick = applyFlux2KleinCharacterWorkflow;
     document.getElementById("qig-comfy-zimage-workflow").onclick = applyZImageTurboWorkflow;
     renderComfyLoraManager();
+    renderSceneCastEditor();
     syncWorkspaceCharacterState(true);
     startWorkspaceContextSync();
 
@@ -13830,22 +14098,33 @@ function createUI() {
     const localRefInput = getOrCacheElement("qig-local-ref-input");
     const localRefBtn = getOrCacheElement("qig-local-ref-btn");
     const localRefClear = getOrCacheElement("qig-local-ref-clear");
+    const localRefLibrary = getOrCacheElement("qig-local-ref-library");
     if (localRefBtn) localRefBtn.onclick = () => localRefInput.click();
     if (localRefClear) localRefClear.onclick = () => {
         const s = getSettings();
-        s.localRefImage = "";
-        saveSettingsDebounced();
-        syncLocalRefImageUI(s);
+        if (s.activeLocalReferenceId) {
+            removeLocalReferenceImage(s.activeLocalReferenceId);
+        }
+    };
+    if (localRefLibrary) localRefLibrary.onclick = (e) => {
+        const deleteId = e.target?.closest?.("[data-local-ref-delete]")?.getAttribute("data-local-ref-delete");
+        if (deleteId) {
+            e.preventDefault();
+            e.stopPropagation();
+            removeLocalReferenceImage(deleteId);
+            return;
+        }
+        const selectId = e.target?.closest?.("[data-local-ref-id]")?.getAttribute("data-local-ref-id");
+        if (selectId) {
+            setActiveLocalReference(selectId);
+        }
     };
     localRefInput.onchange = (e) => {
         const file = e.target.files[0];
         if (!file) return;
         const reader = new FileReader();
         reader.onload = (ev) => {
-            const s = getSettings();
-            s.localRefImage = ev.target.result;
-            saveSettingsDebounced();
-            syncLocalRefImageUI(s);
+            addLocalReferenceImage(ev.target.result, file.name || "Uploaded Reference");
             localRefInput.value = "";
         };
         reader.readAsDataURL(file);

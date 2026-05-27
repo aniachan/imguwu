@@ -1047,6 +1047,10 @@
     color: var(--SmartThemeBodyColor);
 }
 
+.qig-popup-form--scroll {
+    overflow: auto;
+}
+
 .qig-popup-form label {
     display: block;
     margin: 0;

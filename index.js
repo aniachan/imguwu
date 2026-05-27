@@ -8691,7 +8691,7 @@ function showQuickGenerateMenu(anchor) {
 function showQuickCustomPromptDialog() {
     return new Promise((resolve) => {
         const popup = createPopup("qig-quick-custom-popup", "Custom Image Prompt", `
-            <div class="qig-popup-form" style="padding:16px;min-width:min(560px,92vw);">
+            <div class="qig-popup-form qig-popup-form--scroll" style="padding:16px;min-width:min(560px,92vw);">
                 <label for="qig-quick-custom-text">Prompt</label>
                 <textarea id="qig-quick-custom-text" rows="4" placeholder="the girl sits on a table"></textarea>
                 <div class="qig-dialog-actions" style="margin-top:14px;">
@@ -8730,7 +8730,7 @@ function showQuickCustomPromptDialog() {
                     close();
                 }
             };
-        }, { resizable: false });
+        }, { popupClass: "editor", contentClass: "qig-popup-content--editor", resizable: false });
     });
 }
 

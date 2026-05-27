@@ -969,6 +969,7 @@
     width: min(92vw, 760px);
     max-width: 760px;
     max-height: 85vh;
+    overflow: auto;
 }
 
 .qig-popup-header {

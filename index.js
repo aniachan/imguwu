@@ -15996,11 +15996,13 @@ async function processInjectMessageWithOptions(messageText, messageIndex, option
                 detection = extractInjectPromptsFromMessage(message, s);
                 matches = detection.matches.map(match => match.prompt);
             }
-            const unconsumedMatches = filterConsumedInjectPrompts(matches, sourceMessage || message, s);
-            const skippedConsumed = matches.length - unconsumedMatches.length;
-            matches = unconsumedMatches;
-            if (skippedConsumed > 0) {
-                log(`Inject: Skipping ${skippedConsumed} previously consumed tag(s) from source message`);
+            if (!options.force) {
+                const unconsumedMatches = filterConsumedInjectPrompts(matches, sourceMessage || message, s);
+                const skippedConsumed = matches.length - unconsumedMatches.length;
+                matches = unconsumedMatches;
+                if (skippedConsumed > 0) {
+                    log(`Inject: Skipping ${skippedConsumed} previously consumed tag(s) from source message`);
+                }
             }
         } catch (e) {
             log(`Inject: Invalid regex: ${e.message}`);

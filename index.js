@@ -3792,6 +3792,60 @@ function buildSceneCastPromptContext(settings = getSettings()) {
     return `Additional scene cast:\n${lines.join("\n")}`;
 }
 
+function buildCustomPromptCharacterTargets(settings = getSettings(), ctx = getContext()) {
+    const targets = [];
+    const currentEntry = getCurrentCharacterEntry(ctx);
+    const currentName = String(currentEntry?.name || "").trim() || "Main Character";
+    const currentIdentity = String(settings?.visualIdentity || "").trim();
+    targets.push({
+        id: "__main__",
+        label: `Main Character: ${currentName}`,
+        name: currentName,
+        identity: currentIdentity,
+        role: "primary subject",
+        isMain: true,
+    });
+
+    getSceneCastDraft(settings).forEach((member, index) => {
+        const name = String(member?.name || "").trim() || `Scene Character ${index + 1}`;
+        targets.push({
+            id: String(member.id || `scene-${index + 1}`),
+            label: `Scene Character: ${name}`,
+            name,
+            identity: String(member?.identity || "").trim(),
+            role: String(member?.role || "").trim(),
+            isMain: false,
+        });
+    });
+
+    return targets;
+}
+
+function applyCustomCharacterTargetToPrompt(prompt, targetId, settings = getSettings(), ctx = getContext()) {
+    const text = String(prompt || "").trim();
+    if (!text) return text;
+    const targets = buildCustomPromptCharacterTargets(settings, ctx);
+    const selected = targets.find(target => String(target.id) === String(targetId)) || targets[0] || null;
+    if (!selected) return text;
+
+    const parts = [];
+    if (selected.isMain) {
+        const identity = String(selected.identity || "").trim();
+        if (identity) {
+            parts.push(`Primary subject: ${selected.name}. Character visual identity: ${identity}`);
+        } else {
+            parts.push(`Primary subject: ${selected.name}`);
+        }
+    } else {
+        const details = [`Primary subject: ${selected.name}`];
+        if (selected.identity) details.push(`appearance: ${selected.identity}`);
+        if (selected.role) details.push(`scene role: ${selected.role}`);
+        parts.push(`${details.join("; ")}. Focus on this character as the main subject unless the prompt explicitly asks for others.`);
+    }
+    parts.push(text);
+    return parts.join("\n").trim();
+}
+
 function applyCharacterContextToPrompt(prompt, settings = getSettings()) {
     const s = settings || getSettings();
     const parts = [];
@@ -8690,8 +8744,14 @@ function showQuickGenerateMenu(anchor) {
 
 function showQuickCustomPromptDialog() {
     return new Promise((resolve) => {
+        const settings = getSettings();
+        const targetOptions = buildCustomPromptCharacterTargets(settings);
         const popup = createPopup("qig-quick-custom-popup", "Custom Image Prompt", `
             <div class="qig-popup-form qig-popup-form--scroll" style="padding:16px;min-width:min(560px,92vw);">
+                <label for="qig-quick-custom-character">Character</label>
+                <select id="qig-quick-custom-character">
+                    ${targetOptions.map(option => `<option value="${escapeHtml(option.id)}">${escapeHtml(option.label)}</option>`).join("")}
+                </select>
                 <label for="qig-quick-custom-text">Prompt</label>
                 <textarea id="qig-quick-custom-text" rows="4" placeholder="the girl sits on a table"></textarea>
                 <div class="qig-dialog-actions" style="margin-top:14px;">
@@ -8699,6 +8759,7 @@ function showQuickCustomPromptDialog() {
                     <button id="qig-quick-custom-run" class="menu_button">Generate</button>
                 </div>
             </div>`, (popup) => {
+            const targetEl = document.getElementById("qig-quick-custom-character");
             const textEl = document.getElementById("qig-quick-custom-text");
             const close = () => {
                 popup.style.display = "none";
@@ -8712,7 +8773,10 @@ function showQuickCustomPromptDialog() {
                     return;
                 }
                 popup.style.display = "none";
-                resolve(text);
+                resolve({
+                    text,
+                    characterTarget: String(targetEl?.value || "__main__").trim() || "__main__",
+                });
             };
 
             document.getElementById("qig-quick-custom-cancel").onclick = close;
@@ -15051,8 +15115,11 @@ async function runQuickPaletteGeneration(anchor) {
         return generateImage();
     }
 
-    const description = choice.mode === "custom"
+    const customRequest = choice.mode === "custom"
         ? await showQuickCustomPromptDialog()
+        : null;
+    const description = choice.mode === "custom"
+        ? customRequest?.text
         : buildQuickGenerateDescription(choice.mode);
     if (!description) {
         if (choice.mode === "custom") return;
@@ -15062,6 +15129,7 @@ async function runQuickPaletteGeneration(anchor) {
 
     return generateImageFromDescriptionRequest({
         description,
+        characterTarget: customRequest?.characterTarget || "__main__",
         directPrompt: choice.mode === "custom",
         promptStyle: getSettings().llmPromptStyle || "natural",
         editPrompt: !!getSettings().llmEditPrompt,
@@ -15367,6 +15435,7 @@ async function generateImageFromDescriptionRequest(request) {
     const cancelCheckpoint = getCancelCheckpoint();
     const originalSeed = getGenerationSeedValue(s);
     const basePrompt = request.description;
+    const characterTarget = String(request.characterTarget || "__main__").trim() || "__main__";
 
     try {
         checkAborted(cancelCheckpoint);
@@ -15376,7 +15445,7 @@ async function generateImageFromDescriptionRequest(request) {
         if (directPrompt) {
             log(`Direct custom prompt: Sending ${basePrompt.length} chars directly to provider`);
             showStatus("🖼️ Generating image...");
-            prompt = String(basePrompt || "").trim();
+            prompt = applyCustomCharacterTargetToPrompt(basePrompt, characterTarget, s);
         } else {
             log(`Plain description: Generating AI prompt from ${basePrompt.length} chars`);
             showStatus("🤖 Turning description into image prompt...");

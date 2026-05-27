@@ -763,6 +763,7 @@ const PALETTE_CANCEL_LOCK_MS = 500;
 const INTERNAL_LLM_AUTOGEN_GRACE_MS = 2000;
 const INJECT_CONSUMED_EXTRA_KEY = "qig_inject_consumed";
 const QIG_MESSAGE_ACTION_CLASS = "qig-message-generate";
+const QIG_MESSAGE_INJECT_ACTION_CLASS = "qig-message-inline-replace";
 const FILTER_SCOPE_GLOBAL = "global";
 const FILTER_SCOPE_CARD = "card";
 const FILTER_SCOPE_CHAR = "char";
@@ -10980,14 +10981,34 @@ function saveCharSettings() {
         height: s.height,
         visualIdentity: s.visualIdentity || "",
         sceneCast: getSceneCast(s),
-        localReferenceLibrary: getLocalReferenceLibrary(s),
-        activeLocalReferenceId: String(s.activeLocalReferenceId || "").trim(),
     };
     const savedCharSettings = safeSetStorage("qig_char_settings", JSON.stringify(charSettings), "Failed to save character settings. Browser storage may be full.");
-    const refs = getCurrentRefImages(s);
-    if (refs.length > 0) {
-        charRefImages[storageKey] = refs;
+    if (s.provider === "local") {
+        const library = getLocalReferenceLibrary(s);
+        if (library.length > 0) {
+            charRefImages[storageKey] = {
+                library,
+                activeId: String(s.activeLocalReferenceId || "").trim(),
+            };
+        } else {
+            delete charRefImages[storageKey];
+        }
     } else {
+        const refs = getCurrentRefImages(s);
+        if (refs.length > 0) {
+            charRefImages[storageKey] = refs;
+        } else {
+            delete charRefImages[storageKey];
+        }
+    }
+
+    // Strip any previously duplicated image blobs from the settings cache.
+    if (charSettings[storageKey]) {
+        delete charSettings[storageKey].localReferenceLibrary;
+        delete charSettings[storageKey].activeLocalReferenceId;
+    }
+
+    if (s.provider === "local" && !savedCharSettings) {
         delete charRefImages[storageKey];
     }
 
@@ -11319,7 +11340,13 @@ function loadCharSettings() {
     s.localRefImage = "";
     if (hasRefs) {
         if (s.provider === "local") {
-            s.localRefImage = refs[0] || "";
+            if (Array.isArray(storedRefs?.value)) {
+                s.localRefImage = refs[0] || "";
+            } else {
+                s.localReferenceLibrary = normalizeLocalReferenceLibrary(storedRefs?.value?.library);
+                s.activeLocalReferenceId = String(storedRefs?.value?.activeId || "").trim();
+                s.localRefImage = "";
+            }
         } else if (s.provider === "proxy") {
             s.proxyRefImages = [...refs];
         } else if (s.provider === "nanobanana") {
@@ -13477,7 +13504,10 @@ function createUI() {
                             <input id="qig-inject-autoclean" type="checkbox" ${s.injectAutoClean !== false ? "checked" : ""}>
                             <span>Remove detected image tags from the stored/displayed message</span>
                         </label>
-                        <button id="qig-test-inject" class="menu_button qig-inline-action" style="margin-top:8px;">🔍 Test Inject Detection</button>
+                        <div class="qig-action-strip" style="margin-top:8px;">
+                            <button id="qig-test-inject" class="menu_button qig-inline-action">🔍 Test Inject Detection</button>
+                            <button id="qig-run-inject-replace" class="menu_button qig-inline-action">🖼 Replace Current Tag</button>
+                        </div>
                     </div>
                     </div>
 
@@ -14495,6 +14525,9 @@ function createUI() {
 
         alert(result);
     };
+    document.getElementById("qig-run-inject-replace").onclick = async () => {
+        await runManualInjectReplace();
+    };
 
     // LLM Override bindings
     document.getElementById("qig-llm-override").onchange = (e) => {
@@ -14695,6 +14728,14 @@ function createMessageGenerateActionButton(messageIndex) {
     return button;
 }
 
+function createMessageInjectActionButton(messageIndex) {
+    const button = document.createElement("div");
+    button.className = `mes_button fa-solid fa-image ${QIG_MESSAGE_INJECT_ACTION_CLASS}`;
+    button.title = "Attempt inline image replace from this message";
+    button.dataset.messageIndex = String(messageIndex);
+    return button;
+}
+
 function getMessageElementsWithin(root = document) {
     const elements = [];
     if (root instanceof Element && root.matches(".mes[mesid]")) {
@@ -14708,7 +14749,8 @@ function getMessageElementsWithin(root = document) {
 
 function ensureMessageGenerateAction(messageElement, ctx = getContext?.()) {
     if (!(messageElement instanceof Element)) return;
-    if (messageElement.querySelector(`.${QIG_MESSAGE_ACTION_CLASS}`)) return;
+    const hasGenerateAction = !!messageElement.querySelector(`.${QIG_MESSAGE_ACTION_CLASS}`);
+    const hasInjectAction = !!messageElement.querySelector(`.${QIG_MESSAGE_INJECT_ACTION_CLASS}`);
 
     const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
     const messageIndex = clampChatMessageIndex(messageElement.getAttribute("mesid"), chat.length);
@@ -14720,11 +14762,20 @@ function ensureMessageGenerateAction(messageElement, ctx = getContext?.()) {
     const mount = getMessageGenerateActionMount(messageElement);
     if (!(mount instanceof Element)) return;
 
-    const button = createMessageGenerateActionButton(messageIndex);
-    if (!mount.classList.contains("extraMesButtons")) {
-        button.classList.add(`${QIG_MESSAGE_ACTION_CLASS}--fallback`);
+    if (!hasGenerateAction) {
+        const button = createMessageGenerateActionButton(messageIndex);
+        if (!mount.classList.contains("extraMesButtons")) {
+            button.classList.add(`${QIG_MESSAGE_ACTION_CLASS}--fallback`);
+        }
+        mount.appendChild(button);
     }
-    mount.appendChild(button);
+    if (!hasInjectAction && !message.extra?.inline_image) {
+        const injectButton = createMessageInjectActionButton(messageIndex);
+        if (!mount.classList.contains("extraMesButtons")) {
+            injectButton.classList.add(`${QIG_MESSAGE_INJECT_ACTION_CLASS}--fallback`);
+        }
+        mount.appendChild(injectButton);
+    }
 }
 
 function refreshMessageGenerateActions(root = document) {
@@ -14801,12 +14852,79 @@ function bindMessageGenerateActionClicks() {
             clearTransientGenerationTarget();
         }
     });
+
+    $(document).on("click", `.${QIG_MESSAGE_INJECT_ACTION_CLASS}`, async function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        if (isGenerating) {
+            toastr.warning("Generation already in progress");
+            return;
+        }
+
+        const ctx = getContext?.();
+        const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
+        const messageElement = event.currentTarget.closest(".mes[mesid]");
+        const messageIndex = clampChatMessageIndex(
+            messageElement?.getAttribute?.("mesid") ?? event.currentTarget.dataset.messageIndex,
+            chat.length,
+        );
+
+        if (!Number.isInteger(messageIndex)) {
+            toastr.error("Could not find the target chat message");
+            return;
+        }
+
+        try {
+            await processInjectMessage(chat[messageIndex]?.mes || "", messageIndex, {
+                force: true,
+                autoInsert: true,
+                insertMode: "replace",
+                autoClean: true,
+            });
+        } catch (e) {
+            log(`Message action: Inline replace failed for message ${messageIndex}: ${e.message}`);
+            toastr.error("Failed to inline-replace image tag: " + e.message);
+        }
+    });
 }
 
 function runConfiguredPaletteGeneration() {
     const mode = normalizePaletteMode(getSettings()?.paletteMode);
     if (mode === "inject") return generateImageInjectPalette();
     return generateImage();
+}
+
+async function runManualInjectReplace(messageIndex = null) {
+    if (isGenerating) {
+        toastr.warning("Generation already in progress");
+        return;
+    }
+
+    const s = getSettings();
+    const ctx = getContext?.();
+    const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
+    const preferredIndex = Number.isInteger(messageIndex)
+        ? messageIndex
+        : clampChatMessageIndex(getTransientGenerationTarget(ctx)?.messageIndex, chat.length);
+    const resolved = resolveInjectTargetMessage(chat, preferredIndex);
+
+    if (!Number.isInteger(resolved?.index) || !resolved?.message) {
+        toastr.info("No assistant message with a replaceable image tag was found");
+        return;
+    }
+
+    try {
+        await processInjectMessageWithOptions(resolved.message.mes || "", resolved.index, {
+            force: true,
+            autoInsert: true,
+            insertMode: "replace",
+            autoClean: s.injectAutoClean !== false,
+        });
+    } catch (e) {
+        log(`Manual inject replace failed for message ${resolved.index}: ${e.message}`);
+        toastr.error("Inline replace failed: " + e.message);
+    }
 }
 
 async function runQuickPaletteGeneration(anchor) {
@@ -15826,7 +15944,11 @@ function onChatCompletionPromptReady(eventData) {
     }
 }
 
-async function processInjectMessage(messageText, messageIndex) {
+async function processInjectMessage(messageText, messageIndex, options = {}) {
+    return await processInjectMessageWithOptions(messageText, messageIndex, options);
+}
+
+async function processInjectMessageWithOptions(messageText, messageIndex, options = {}) {
     const cancelCheckpoint = getCancelCheckpoint();
     const shouldReleaseIndex = messageIndex !== undefined;
     let startedGeneration = false;
@@ -15838,7 +15960,15 @@ async function processInjectMessage(messageText, messageIndex) {
     try {
         _injectProcessingCount++;
         s = getSettings();
-        if (!s.injectEnabled) return;
+        if (!options.force && !s.injectEnabled) return;
+        if (options.force) {
+            s = {
+                ...s,
+                autoInsert: options.autoInsert !== false,
+                injectInsertMode: options.insertMode || "replace",
+                injectAutoClean: options.autoClean !== false,
+            };
+        }
 
         const ctx = getContext();
         const chat = ctx?.chat;

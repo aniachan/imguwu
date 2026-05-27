@@ -15956,6 +15956,7 @@ async function processInjectMessageWithOptions(messageText, messageIndex, option
     let sourceMessage = null;
     let sourceMessageIndex = null;
     const consumedMessagePrompts = new Set();
+    let generatedImageCount = 0;
 
     try {
         _injectProcessingCount++;
@@ -16003,10 +16004,18 @@ async function processInjectMessageWithOptions(messageText, messageIndex, option
             }
         } catch (e) {
             log(`Inject: Invalid regex: ${e.message}`);
+            if (options.force) {
+                toastr.error("Inline replace failed: invalid inject regex");
+            }
             return;
         }
 
-        if (matches.length === 0) return;
+        if (matches.length === 0) {
+            if (options.force) {
+                toastr.info("No matching image tag was found in that message");
+            }
+            return;
+        }
 
         const sourceSummary = detection ? (detection.scannedSources.join(", ") || "message") : "raw message text";
         log(`Inject: Found ${matches.length} image tag(s) in ${sourceSummary}`);
@@ -16131,6 +16140,7 @@ async function processInjectMessageWithOptions(messageText, messageIndex, option
                         // Always show batch picker for multiple images
                         displayBatchResults(results);
                     }
+                    generatedImageCount += results.length;
                     toastr.success(`Inject mode: ${results.length} image(s) generated`);
                 }
             } catch (e) {
@@ -16166,6 +16176,9 @@ async function processInjectMessageWithOptions(messageText, messageIndex, option
         // even when returning early (invalid regex, no matches, disabled mode, etc).
         if (shouldReleaseIndex) {
             setTimeout(() => _processedInjectIndices.delete(messageIndex), 120000);
+        }
+        if (options.force && generatedImageCount === 0 && !cancelRequested) {
+            toastr.info("No inline image was generated from that message");
         }
     }
 }

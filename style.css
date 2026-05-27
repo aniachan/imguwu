@@ -1122,6 +1122,43 @@
     gap: 16px;
 }
 
+.qig-detected-markers-form {
+    padding: 16px;
+    display: grid;
+    gap: 12px;
+}
+
+.qig-detected-markers-list {
+    display: grid;
+    gap: 10px;
+}
+
+.qig-detected-marker-card {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.18);
+}
+
+.qig-detected-marker-card__meta {
+    font-size: 10px;
+    color: color-mix(in srgb, var(--SmartThemeBodyColor) 72%, transparent);
+}
+
+.qig-detected-marker-card__prompt {
+    margin: 0;
+    padding: 10px;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.24);
+    color: var(--SmartThemeBodyColor);
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: monospace;
+    font-size: 12px;
+}
+
 .qig-pool-choice-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

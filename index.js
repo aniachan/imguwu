@@ -10446,6 +10446,38 @@ function getCurrentRefImages(s) {
     return [];
 }
 
+function buildCharScopedRefBundle(s = getSettings()) {
+    const bundle = {};
+    const localLibrary = getLocalReferenceLibrary(s);
+    if (localLibrary.length > 0) {
+        bundle.local = {
+            library: localLibrary,
+            activeId: String(s.activeLocalReferenceId || "").trim(),
+        };
+    }
+    if (Array.isArray(s.proxyRefImages) && s.proxyRefImages.length > 0) {
+        bundle.proxyRefImages = [...s.proxyRefImages];
+    }
+    if (Array.isArray(s.nanobananaRefImages) && s.nanobananaRefImages.length > 0) {
+        bundle.nanobananaRefImages = [...s.nanobananaRefImages];
+    }
+    if (Array.isArray(s.nanogptRefImages) && s.nanogptRefImages.length > 0) {
+        bundle.nanogptRefImages = [...s.nanogptRefImages];
+    }
+    return Object.keys(bundle).length > 0 ? bundle : null;
+}
+
+function hasStoredCharRefs(value) {
+    if (Array.isArray(value)) return value.length > 0;
+    if (!value || typeof value !== "object") return false;
+    if (Array.isArray(value.library) && value.library.length > 0) return true;
+    if (Array.isArray(value.local?.library) && value.local.library.length > 0) return true;
+    if (Array.isArray(value.proxyRefImages) && value.proxyRefImages.length > 0) return true;
+    if (Array.isArray(value.nanobananaRefImages) && value.nanobananaRefImages.length > 0) return true;
+    if (Array.isArray(value.nanogptRefImages) && value.nanogptRefImages.length > 0) return true;
+    return false;
+}
+
 function cloneCharScopedState(s = getSettings()) {
     ensureActiveLocalReference(s);
     return {
@@ -10983,23 +11015,11 @@ function saveCharSettings() {
         sceneCast: getSceneCast(s),
     };
     const savedCharSettings = safeSetStorage("qig_char_settings", JSON.stringify(charSettings), "Failed to save character settings. Browser storage may be full.");
-    if (s.provider === "local") {
-        const library = getLocalReferenceLibrary(s);
-        if (library.length > 0) {
-            charRefImages[storageKey] = {
-                library,
-                activeId: String(s.activeLocalReferenceId || "").trim(),
-            };
-        } else {
-            delete charRefImages[storageKey];
-        }
+    const refBundle = buildCharScopedRefBundle(s);
+    if (refBundle) {
+        charRefImages[storageKey] = refBundle;
     } else {
-        const refs = getCurrentRefImages(s);
-        if (refs.length > 0) {
-            charRefImages[storageKey] = refs;
-        } else {
-            delete charRefImages[storageKey];
-        }
+        delete charRefImages[storageKey];
     }
 
     // Strip any previously duplicated image blobs from the settings cache.
@@ -11008,7 +11028,7 @@ function saveCharSettings() {
         delete charSettings[storageKey].activeLocalReferenceId;
     }
 
-    if (s.provider === "local" && !savedCharSettings) {
+    if (!savedCharSettings) {
         delete charRefImages[storageKey];
     }
 
@@ -11287,7 +11307,7 @@ function loadCharSettings() {
     const storedRefs = getStoredCharacterValue(charRefImages, entry, ctx);
     const hasSettings = !!storedSettings?.value;
     const refs = Array.isArray(storedRefs?.value) ? storedRefs.value : [];
-    const hasRefs = refs.length > 0;
+    const hasRefs = hasStoredCharRefs(storedRefs?.value);
     if (!hasSettings && !hasRefs) {
         applyCharScopedState(charSettingsBaseState, s);
         clearCharacterScopedFields(s);
@@ -11337,22 +11357,30 @@ function loadCharSettings() {
     s.proxyRefImages = [];
     s.nanobananaRefImages = [];
     s.nanogptRefImages = [];
+    s.localReferenceLibrary = normalizeLocalReferenceLibrary(cs.localReferenceLibrary);
+    s.activeLocalReferenceId = String(cs.activeLocalReferenceId || "").trim();
     s.localRefImage = "";
     if (hasRefs) {
-        if (s.provider === "local") {
-            if (Array.isArray(storedRefs?.value)) {
+        if (Array.isArray(storedRefs?.value)) {
+            if (s.provider === "local") {
                 s.localRefImage = refs[0] || "";
-            } else {
-                s.localReferenceLibrary = normalizeLocalReferenceLibrary(storedRefs?.value?.library);
-                s.activeLocalReferenceId = String(storedRefs?.value?.activeId || "").trim();
-                s.localRefImage = "";
+            } else if (s.provider === "proxy") {
+                s.proxyRefImages = [...refs];
+            } else if (s.provider === "nanobanana") {
+                s.nanobananaRefImages = [...refs];
+            } else if (s.provider === "nanogpt") {
+                s.nanogptRefImages = [...refs];
             }
-        } else if (s.provider === "proxy") {
-            s.proxyRefImages = [...refs];
-        } else if (s.provider === "nanobanana") {
-            s.nanobananaRefImages = [...refs];
-        } else if (s.provider === "nanogpt") {
-            s.nanogptRefImages = [...refs];
+        } else {
+            const refBundle = storedRefs?.value || {};
+            const localBundle = refBundle.local && typeof refBundle.local === "object"
+                ? refBundle.local
+                : refBundle;
+            s.localReferenceLibrary = normalizeLocalReferenceLibrary(localBundle?.library);
+            s.activeLocalReferenceId = String(localBundle?.activeId || "").trim();
+            s.proxyRefImages = Array.isArray(refBundle.proxyRefImages) ? [...refBundle.proxyRefImages] : [];
+            s.nanobananaRefImages = Array.isArray(refBundle.nanobananaRefImages) ? [...refBundle.nanobananaRefImages] : [];
+            s.nanogptRefImages = Array.isArray(refBundle.nanogptRefImages) ? [...refBundle.nanogptRefImages] : [];
         }
     }
     if (!s.localReferenceLibrary.length && s.localRefImage) {
@@ -13506,7 +13534,7 @@ function createUI() {
                         </label>
                         <div class="qig-action-strip" style="margin-top:8px;">
                             <button id="qig-test-inject" class="menu_button qig-inline-action">🔍 Test Inject Detection</button>
-                            <button id="qig-run-inject-replace" class="menu_button qig-inline-action">🖼 Replace Current Tag</button>
+                            <button id="qig-run-inject-replace" class="menu_button qig-inline-action">🏷 Detected Markers</button>
                         </div>
                     </div>
                     </div>
@@ -14526,7 +14554,7 @@ function createUI() {
         alert(result);
     };
     document.getElementById("qig-run-inject-replace").onclick = async () => {
-        await runManualInjectReplace();
+        await showDetectedMarkersDialog();
     };
 
     // LLM Override bindings
@@ -14730,8 +14758,8 @@ function createMessageGenerateActionButton(messageIndex) {
 
 function createMessageInjectActionButton(messageIndex) {
     const button = document.createElement("div");
-    button.className = `mes_button fa-solid fa-image ${QIG_MESSAGE_INJECT_ACTION_CLASS}`;
-    button.title = "Attempt inline image replace from this message";
+    button.className = `mes_button fa-solid fa-tags ${QIG_MESSAGE_INJECT_ACTION_CLASS}`;
+    button.title = "Show detected image markers in this message";
     button.dataset.messageIndex = String(messageIndex);
     return button;
 }
@@ -14857,11 +14885,6 @@ function bindMessageGenerateActionClicks() {
         event.preventDefault();
         event.stopPropagation();
 
-        if (isGenerating) {
-            toastr.warning("Generation already in progress");
-            return;
-        }
-
         const ctx = getContext?.();
         const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
         const messageElement = event.currentTarget.closest(".mes[mesid]");
@@ -14876,15 +14899,10 @@ function bindMessageGenerateActionClicks() {
         }
 
         try {
-            await processInjectMessage(chat[messageIndex]?.mes || "", messageIndex, {
-                force: true,
-                autoInsert: true,
-                insertMode: "replace",
-                autoClean: true,
-            });
+            await showDetectedMarkersDialog(messageIndex);
         } catch (e) {
-            log(`Message action: Inline replace failed for message ${messageIndex}: ${e.message}`);
-            toastr.error("Failed to inline-replace image tag: " + e.message);
+            log(`Message action: Detected markers failed for message ${messageIndex}: ${e.message}`);
+            toastr.error("Failed to open detected markers: " + e.message);
         }
     });
 }
@@ -14925,6 +14943,101 @@ async function runManualInjectReplace(messageIndex = null) {
         log(`Manual inject replace failed for message ${resolved.index}: ${e.message}`);
         toastr.error("Inline replace failed: " + e.message);
     }
+}
+
+function applyDetectedMarkerToPrompt(prompt) {
+    const text = String(prompt || "").trim();
+    if (!text) return;
+    const s = getSettings();
+    s.prompt = text;
+    const promptEl = document.getElementById("qig-prompt");
+    if (promptEl) promptEl.value = text;
+    saveSettingsDebounced();
+    notifyUiSuccess("Copied detected marker into the prompt box");
+}
+
+function resolveDetectedMarkerTarget(preferredIndex = null, settings = getSettings()) {
+    const ctx = getContext?.();
+    const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
+    const preferred = Number.isInteger(preferredIndex)
+        ? preferredIndex
+        : clampChatMessageIndex(getTransientGenerationTarget(ctx)?.messageIndex, chat.length);
+    const explicitIndex = clampChatMessageIndex(preferred, chat.length);
+    const explicitMessage = Number.isInteger(explicitIndex) ? chat[explicitIndex] : null;
+
+    if (explicitMessage && !explicitMessage.is_user) {
+        return { message: explicitMessage, index: explicitIndex };
+    }
+
+    return findLastInjectCandidateMessage(chat, settings, { requireMatches: true, includeConsumed: true })
+        || findLastAssistantMessage(chat);
+}
+
+async function showDetectedMarkersDialog(messageIndex = null) {
+    const s = getSettings();
+    const target = resolveDetectedMarkerTarget(messageIndex, s);
+    if (!Number.isInteger(target?.index) || !target?.message) {
+        toastr.info("No assistant message was available for marker detection");
+        return;
+    }
+
+    let detection;
+    try {
+        detection = extractInjectPromptsFromMessage(target.message, s);
+    } catch (e) {
+        toastr.error("Invalid regex: " + e.message);
+        return;
+    }
+
+    if (!detection.matches.length) {
+        toastr.info("No matching image markers were found in that message");
+        return;
+    }
+
+    createPopup("qig-detected-markers-popup", "Detected Markers", `
+        <div class="qig-popup-form qig-detected-markers-form">
+            <small class="qig-muted">Message ${target.index + 1}. Choose one detected marker and either copy it into the prompt box or generate and replace it inline.</small>
+            <div id="qig-detected-markers-list" class="qig-detected-markers-list">
+                ${detection.matches.map((match, i) => `
+                    <div class="qig-detected-marker-card">
+                        <div class="qig-detected-marker-card__meta">Marker ${i + 1}${match.sources?.length ? ` • ${escapeHtml(match.sources.join(", "))}` : ""}</div>
+                        <pre class="qig-detected-marker-card__prompt">${escapeHtml(match.prompt)}</pre>
+                        <div class="qig-dialog-actions">
+                            <button type="button" class="menu_button" data-marker-action="use" data-marker-prompt="${escapeHtml(match.prompt)}">Use as Prompt</button>
+                            <button type="button" class="menu_button" data-marker-action="replace" data-marker-prompt="${escapeHtml(match.prompt)}">Generate + Replace</button>
+                        </div>
+                    </div>
+                `).join("")}
+            </div>
+        </div>
+    `, (popup) => {
+        popup.querySelector("#qig-detected-markers-list")?.addEventListener("click", async (event) => {
+            const actionEl = event.target?.closest?.("[data-marker-action]");
+            if (!actionEl) return;
+            const prompt = String(actionEl.getAttribute("data-marker-prompt") || "").trim();
+            if (!prompt) return;
+
+            if (actionEl.getAttribute("data-marker-action") === "use") {
+                applyDetectedMarkerToPrompt(prompt);
+                popup.style.display = "none";
+                return;
+            }
+
+            popup.style.display = "none";
+            try {
+                await processInjectMessageWithOptions(target.message.mes || "", target.index, {
+                    force: true,
+                    autoInsert: true,
+                    insertMode: "replace",
+                    autoClean: s.injectAutoClean !== false,
+                    selectedPrompts: [prompt],
+                });
+            } catch (e) {
+                log(`Detected marker replace failed for message ${target.index}: ${e.message}`);
+                toastr.error("Generate + Replace failed: " + e.message);
+            }
+        });
+    }, { popupClass: "editor", contentClass: "qig-popup-content--editor", resizable: false });
 }
 
 async function runQuickPaletteGeneration(anchor) {
@@ -15995,6 +16108,10 @@ async function processInjectMessageWithOptions(messageText, messageIndex, option
                 // Fall back to multi-source extraction from the message object
                 detection = extractInjectPromptsFromMessage(message, s);
                 matches = detection.matches.map(match => match.prompt);
+            }
+            if (Array.isArray(options.selectedPrompts) && options.selectedPrompts.length > 0) {
+                const selected = new Set(options.selectedPrompts.map(normalizeInjectPromptValue).filter(Boolean));
+                matches = matches.filter(prompt => selected.has(normalizeInjectPromptValue(prompt)));
             }
             if (!options.force) {
                 const unconsumedMatches = filterConsumedInjectPrompts(matches, sourceMessage || message, s);
